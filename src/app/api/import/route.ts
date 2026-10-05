@@ -259,32 +259,42 @@ export async function POST(request: Request) {
     let aiLabeled = 0;
     let aiWarning: string | undefined;
     if (needsAi.size > 0 && geminiConfigured()) {
-      try {
-        const batch = Array.from(needsAi).slice(0, 40);
-        const aiMap = await Promise.race([
-          aiCategorizeMerchants(batch, categoryNames),
-          new Promise<Map<string, string>>((resolve) =>
-            setTimeout(() => resolve(new Map()), 12_000)
-          ),
-        ]);
-        for (const f of parsedFiles) {
-          for (const row of f.pending) {
-            if (row.source !== "other" && row.source !== "none") continue;
-            const catName = aiMap.get(row.merchant.trim().toLowerCase());
-            const id = catName ? catByName.get(catName.toLowerCase()) : null;
-            if (!id) continue;
-            row.categoryId = id;
-            row.source = "ai";
-            aiLabeled += 1;
-            await rememberMerchant(prisma, row.merchant, id);
-            ruleMap.set(normalizeMerchant(row.merchant), id);
+      const pending = Array.from(needsAi);
+      const labeled = new Map<string, string>();
+      const batches = Math.min(4, Math.ceil(pending.length / 30));
+      for (let i = 0; i < batches; i++) {
+        const batch = pending.slice(i * 30, i * 30 + 30);
+        if (!batch.length) break;
+        try {
+          const aiMap = await Promise.race([
+            aiCategorizeMerchants(batch, categoryNames),
+            new Promise<Map<string, string>>((resolve) => setTimeout(() => resolve(new Map()), 15_000)),
+          ]);
+          aiMap.forEach((cat, merchant) => labeled.set(merchant, cat));
+          if (aiMap.size === 0) {
+            aiWarning = "Gemini categorization timed out — rows kept with heuristic/Other labels.";
+            break;
           }
+        } catch {
+          aiWarning = "Gemini categorization timed out — rows kept with heuristic/Other labels.";
+          break;
         }
-        if (needsAi.size > batch.length) {
-          aiWarning = `Auto-labeled ${batch.length} of ${needsAi.size} unknown merchants (rest → Other).`;
+      }
+      for (const f of parsedFiles) {
+        for (const row of f.pending) {
+          if (row.source !== "other" && row.source !== "none") continue;
+          const catName = labeled.get(row.merchant.trim().toLowerCase());
+          const id = catName ? catByName.get(catName.toLowerCase()) : null;
+          if (!id) continue;
+          row.categoryId = id;
+          row.source = "ai";
+          aiLabeled += 1;
+          await rememberMerchant(prisma, row.merchant, id);
+          ruleMap.set(normalizeMerchant(row.merchant), id);
         }
-      } catch {
-        aiWarning = "Gemini categorization timed out — rows kept with heuristic/Other labels.";
+      }
+      if (pending.length > batches * 30) {
+        aiWarning = `Labeled ${Math.min(pending.length, batches * 30)} of ${pending.length} unknown merchants. Use Settings → Re-label spend for the rest.`;
       }
     }
 
@@ -339,6 +349,11 @@ export async function POST(request: Request) {
       totalAuto += autoCategorized;
     }
 
+    const other = await prisma.category.findUnique({ where: { name: "Other" } });
+    const otherLeft = other
+      ? await prisma.transaction.count({ where: { categoryId: other.id } })
+      : 0;
+    const sampleOther = Array.from(needsAi).slice(0, 8);
     return NextResponse.json({
       files: results,
       imported: totalImported,
@@ -348,7 +363,15 @@ export async function POST(request: Request) {
       aiLabeled,
       aiEnabled: geminiConfigured(),
       warning: aiWarning,
-      dedupe: "date+amount+normalized merchant — re-imports skip duplicates; existing data is never wiped",
+      quality: {
+        imported: totalImported,
+        duplicates: totalDup,
+        labeled: totalAuto,
+        otherLeft,
+        sampleOther,
+        warning: aiWarning ?? null,
+      },
+      dedupe: "date+amount+canonical merchant — re-imports skip duplicates; existing data is never wiped",
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Import failed";

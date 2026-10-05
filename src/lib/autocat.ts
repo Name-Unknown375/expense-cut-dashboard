@@ -1,3 +1,5 @@
+import { merchantKey } from "./insights";
+
 /**
  * Automatic categorization — no manual labeling required.
  * Order: remembered merchant → keyword match → Other.
@@ -361,7 +363,8 @@ export function resolveCategoryId(
     if (id) return { categoryId: id, source: "csv" };
   }
 
-  const exact = ruleMap.get(merchant.trim().toLowerCase());
+  const exact =
+    ruleMap.get(merchant.trim().toLowerCase()) ?? ruleMap.get(merchantKey(merchant));
   if (exact) return { categoryId: exact, source: "memory" };
 
   // Partial memory match (e.g. "STARBUCKS #1234" vs "starbucks")
@@ -398,7 +401,7 @@ export async function rememberMerchant(
   merchant: string,
   categoryId: string
 ) {
-  const key = merchant.trim().toLowerCase();
+  const key = merchantKey(merchant);
   if (!key || !categoryId) return;
   await prisma.merchantRule.upsert({
     where: { merchant: key },

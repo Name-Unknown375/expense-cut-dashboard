@@ -5,6 +5,7 @@ import { rememberMerchant, resolveCategoryId } from "@/lib/autocat";
 import { aiCategorizeMerchants, geminiConfigured } from "@/lib/gemini";
 import { z } from "zod";
 import { periodFromSearchParams, resolvePeriod } from "@/lib/period";
+import { merchantKey } from "@/lib/insights";
 
 const createSchema = z.object({
   date: z.string(),
@@ -46,19 +47,26 @@ export async function GET(request: Request) {
     if (categoryId === "uncategorized") where.categoryId = null;
     else where.categoryId = categoryId;
   }
-  if (merchant) {
-    where.merchant = { contains: merchant };
-  }
+  const merchantFilter = merchant;
   if (q) {
     where.OR = [{ merchant: { contains: q } }, { note: { contains: q } }];
   }
 
-  const transactions = await prisma.transaction.findMany({
+  let transactions = await prisma.transaction.findMany({
     where,
     include: { category: true },
     orderBy: { date: "desc" },
-    take: 500,
+    take: merchantFilter ? 2000 : 500,
   });
+  if (merchantFilter) {
+    const key = merchantKey(merchantFilter);
+    const needle = merchantFilter.toLowerCase();
+    transactions = transactions
+      .filter(
+        (t) => merchantKey(t.merchant) === key || t.merchant.toLowerCase().includes(needle)
+      )
+      .slice(0, 500);
+  }
   return NextResponse.json({ transactions });
 }
 
