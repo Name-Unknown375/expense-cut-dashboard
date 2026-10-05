@@ -12,55 +12,66 @@ export async function POST() {
   const categories = await prisma.category.findMany();
   const byName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
   const other = categories.find((c) => c.name === "Other");
-  const before = other
-    ? await prisma.transaction.count({ where: { categoryId: other.id } })
-    : 0;
+  if (!other) return NextResponse.json({ error: "Other category missing" }, { status: 500 });
 
-  const groups = await prisma.transaction.groupBy({ by: ["merchant", "categoryId"] });
-  let heuristic = 0;
-  for (const row of groups) {
+  const before = await prisma.transaction.count({ where: { categoryId: other.id } });
+  const total = await prisma.transaction.count();
+  const rows = await prisma.transaction.findMany({
+    where: { categoryId: other.id },
+    select: { merchant: true },
+    distinct: ["merchant"],
+  });
+
+  const buckets = new Map<string, string[]>();
+  const unknown: string[] = [];
+  for (const row of rows) {
     const guess = guessCategoryName(row.merchant);
-    if (!guess) continue;
-    const nextId = byName.get(guess.toLowerCase());
-    if (!nextId || nextId === row.categoryId) continue;
-    const updated = await prisma.transaction.updateMany({
-      where: { merchant: row.merchant, categoryId: row.categoryId },
-      data: { categoryId: nextId },
-    });
-    heuristic += updated.count;
-    await rememberMerchant(prisma, row.merchant, nextId);
+    const id = guess ? byName.get(guess.toLowerCase()) : undefined;
+    if (!id || id === other.id) {
+      unknown.push(row.merchant);
+      continue;
+    }
+    const list = buckets.get(id) ?? [];
+    list.push(row.merchant);
+    buckets.set(id, list);
   }
 
-  let ai = 0;
-  if (other && geminiConfigured()) {
-    const remaining = await prisma.transaction.findMany({
-      where: { categoryId: other.id },
-      select: { merchant: true },
-      distinct: ["merchant"],
+  let heuristic = 0;
+  for (const [categoryId, merchants] of Array.from(buckets.entries())) {
+    const updated = await prisma.transaction.updateMany({
+      where: { categoryId: other.id, merchant: { in: merchants } },
+      data: { categoryId },
     });
-    const names = categories.map((c) => c.name);
-    const merchants = remaining.map((r) => r.merchant);
-    for (let i = 0; i < merchants.length && i < 120; i += 30) {
-      const batch = merchants.slice(i, i + 30);
-      const map = await aiCategorizeMerchants(batch, names);
-      for (const merchant of batch) {
-        const cat = map.get(merchant.trim().toLowerCase());
-        const id = cat ? byName.get(cat.toLowerCase()) : undefined;
-        if (!id || id === other.id) continue;
-        const updated = await prisma.transaction.updateMany({
-          where: { merchant, categoryId: other.id },
-          data: { categoryId: id },
-        });
-        ai += updated.count;
-        await rememberMerchant(prisma, merchant, id);
+    heuristic += updated.count;
+    const name = categories.find((c) => c.id === categoryId)?.name;
+    if (name) {
+      for (const merchant of merchants.slice(0, 30)) {
+        await rememberMerchant(prisma, merchant, categoryId);
       }
     }
   }
 
-  const after = other
-    ? await prisma.transaction.count({ where: { categoryId: other.id } })
-    : 0;
-  const total = await prisma.transaction.count();
+  let ai = 0;
+  if (geminiConfigured() && unknown.length) {
+    const batch = unknown.slice(0, 25);
+    const map = await Promise.race([
+      aiCategorizeMerchants(batch, categories.map((c) => c.name)),
+      new Promise<Map<string, string>>((resolve) => setTimeout(() => resolve(new Map()), 12_000)),
+    ]);
+    for (const merchant of batch) {
+      const cat = map.get(merchant.trim().toLowerCase());
+      const id = cat ? byName.get(cat.toLowerCase()) : undefined;
+      if (!id || id === other.id) continue;
+      const updated = await prisma.transaction.updateMany({
+        where: { merchant, categoryId: other.id },
+        data: { categoryId: id },
+      });
+      ai += updated.count;
+      await rememberMerchant(prisma, merchant, id);
+    }
+  }
+
+  const after = await prisma.transaction.count({ where: { categoryId: other.id } });
   return NextResponse.json({
     before,
     after,
@@ -68,5 +79,6 @@ export async function POST() {
     otherPct: total ? Math.round((after / total) * 1000) / 10 : 0,
     heuristic,
     ai,
+    remainingUnknown: Math.max(0, unknown.length - 25),
   });
 }
