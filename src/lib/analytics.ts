@@ -28,6 +28,7 @@ import {
   shortMerchant,
 } from "./insights";
 import { buildPace, buildSubscriptions, capDayLabel, pastYouLine } from "./coach";
+import { buildAwareness, EXAMPLE_IF_THEN, parseCuts, parseIfThen } from "./awareness";
 import { isInternalMovement } from "./autocat";
 
 export type CutItem = {
@@ -153,6 +154,24 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
   const rentDoubled = rentInPeriod.length >= 2;
   const taps = buildTaps(thisSpend);
   const brief = buildBrief(opening, story.lines, taps);
+  let ifThenRules = parseIfThen(settings?.ifThenJson);
+  if (settings && settings.ifThenJson == null) {
+    ifThenRules = [EXAMPLE_IF_THEN];
+    await prisma.settings.update({
+      where: { id: "default" },
+      data: { ifThenJson: JSON.stringify(ifThenRules) },
+    });
+  }
+  const awareness = buildAwareness({
+    periodStart: start,
+    periodEnd: end,
+    now,
+    periodSpend: thisSpend,
+    allSpend,
+    caps,
+    rules: ifThenRules,
+    cuts: parseCuts(settings?.cutsJson),
+  });
 
   const rules = await prisma.spendingRule.findMany({
     where: { active: true },
@@ -255,6 +274,7 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     story,
     opening,
     brief,
+    awareness,
     caps,
     rentDoubled,
     fixedSpent,
