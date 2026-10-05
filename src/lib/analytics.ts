@@ -18,6 +18,7 @@ import {
 } from "date-fns";
 import { resolvePeriod, type PeriodSpec } from "./period";
 import {
+  buildBrief,
   buildCaps,
   buildDisposition,
   buildOpening,
@@ -151,6 +152,7 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
   const rentInPeriod = thisTx.filter(isRentLine);
   const rentDoubled = rentInPeriod.length >= 2;
   const taps = buildTaps(thisSpend);
+  const brief = buildBrief(opening, story.lines, taps);
 
   const rules = await prisma.spendingRule.findMany({
     where: { active: true },
@@ -252,6 +254,7 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     disposition,
     story,
     opening,
+    brief,
     caps,
     rentDoubled,
     fixedSpent,
