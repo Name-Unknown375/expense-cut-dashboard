@@ -1,1 +1,1 @@
-@/tmp/push_page_only.json
+PLACEHOLDER_WILL_FAIL_VERIFY
