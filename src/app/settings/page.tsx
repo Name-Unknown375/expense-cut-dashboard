@@ -1,6 +1,7 @@
 "use client";
 
 import { Nav } from "@/components/Nav";
+import { periodToQuery, loadStickyPeriod } from "@/components/PeriodFilter";
 import { useEffect, useState } from "react";
 
 type Category = { id: string; name: string; bucket: string; color: string };
@@ -27,7 +28,13 @@ export default function SettingsPage() {
     limitAmount: "",
   });
   const [origin, setOrigin] = useState("");
+  const [shareQs, setShareQs] = useState("");
   const [saved, setSaved] = useState("");
+  const [relabelMsg, setRelabelMsg] = useState("");
+  const [ruleQuery, setRuleQuery] = useState("");
+  const [memory, setMemory] = useState<
+    { id: string; merchant: string; categoryId: string; category: string }[]
+  >([]);
 
   async function load() {
     const res = await fetch("/api/settings");
@@ -41,6 +48,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setOrigin(window.location.origin);
+    setShareQs(periodToQuery(loadStickyPeriod()));
     load();
   }, []);
 
@@ -248,7 +256,7 @@ export default function SettingsPage() {
           </p>
           {share ? (
             <p className="mt-3 break-all rounded-lg bg-[var(--wash)] px-3 py-2 text-sm">
-              {origin}/share/{share.token}
+              {origin}/share/{share.token}{shareQs ? `?${shareQs}` : ""}
             </p>
           ) : (
             <p className="mt-3 text-sm text-[var(--muted)]">No active share link.</p>
@@ -268,6 +276,104 @@ export default function SettingsPage() {
                 Revoke
               </button>
             )}
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl">Re-label spend</h2>
+          <p className="text-sm text-[var(--muted)]">
+            Runs the rules, then Gemini, over anything still in Other. Nothing is deleted.
+          </p>
+          <button
+            type="button"
+            className="mt-3 rounded-md bg-[var(--ink)] px-4 py-2 text-sm text-white"
+            onClick={async () => {
+              setRelabelMsg("Working…");
+              const res = await fetch("/api/relabel", { method: "POST" });
+              const data = await res.json();
+              setRelabelMsg(
+                res.ok
+                  ? `Other ${data.before} → ${data.after} (${data.otherPct}% of transactions).`
+                  : data.error || "Re-label failed"
+              );
+            }}
+          >
+            Re-label spend
+          </button>
+          {relabelMsg && <p className="mt-2 text-sm text-[var(--muted)]">{relabelMsg}</p>}
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl">Merchant memory</h2>
+          <p className="text-sm text-[var(--muted)]">
+            Learned labels. Applying a category updates every purchase with the same place name.
+          </p>
+          <form
+            className="mt-3 flex gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const res = await fetch(`/api/merchant-rules?q=${encodeURIComponent(ruleQuery)}`);
+              const data = await res.json();
+              setMemory(data.rules ?? []);
+            }}
+          >
+            <input
+              value={ruleQuery}
+              onChange={(e) => setRuleQuery(e.target.value)}
+              placeholder="Search Costco, Uber…"
+              className="flex-1 rounded-md border border-[var(--line)] px-3 py-2 text-sm"
+            />
+            <button className="rounded-md bg-[var(--ink)] px-3 py-2 text-sm text-white">Search</button>
+          </form>
+          <ul className="mt-3 space-y-2">
+            {memory.map((r) => (
+              <li key={r.id} className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">{r.merchant}</span>
+                <select
+                  defaultValue={r.categoryId}
+                  className="rounded border border-[var(--line)] px-2 py-1"
+                  onChange={async (e) => {
+                    await fetch("/api/merchant-rules", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        id: r.id,
+                        categoryId: e.target.value,
+                        applyAll: true,
+                      }),
+                    });
+                  }}
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="text-rose-600"
+                  onClick={async () => {
+                    await fetch(`/api/merchant-rules?id=${r.id}`, { method: "DELETE" });
+                    setMemory((list) => list.filter((x) => x.id !== r.id));
+                  }}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl">Export</h2>
+          <div className="mt-3 flex flex-wrap gap-3 text-sm">
+            <a className="underline" href="/api/export?what=transactions">
+              Download transactions CSV
+            </a>
+            <a className="underline" href="/api/export?what=rules">
+              Download rules CSV
+            </a>
           </div>
         </section>
 
