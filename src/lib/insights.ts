@@ -87,6 +87,42 @@ function phraseFor(merchant: string, count: number, min: number, max: number, av
   return `${wc} ${unit}`;
 }
 
+/** Readable label: drop SQ *, PayPal noise, store numbers, and city/province. */
+export function shortMerchant(raw: string): string {
+  const original = raw.trim();
+  const lower = original.toLowerCase();
+  if (/costco gas/.test(lower)) return "Costco Gas";
+  if (/costco/.test(lower)) return "Costco";
+  if (/wealth realty/.test(lower)) return "Wealth Realty rent";
+  if (/ubereats|uber eats/.test(lower)) return "Uber Eats";
+  if (/ubertrip|uber trip|uber canada\/uber(?!e)/.test(lower)) return "Uber";
+  if (/domino/.test(lower)) return "Domino's";
+  if (/downlow|dl chicken/.test(lower)) return "Downlow Chicken";
+  if (/nayax|vending/.test(lower)) return "Vending";
+  if (/haha innovation/.test(lower)) return "HAHA vending";
+  if (/nesters/.test(lower)) return "Nesters Market";
+  if (/save on foods/.test(lower)) return "Save-On-Foods";
+  if (/compass/.test(lower)) return "Compass transit";
+  if (/steam/.test(lower)) return "Steam";
+  if (/starbucks/.test(lower)) return "Starbucks";
+  if (/presotea/.test(lower)) return "Presotea";
+  if (/tim horton/.test(lower)) return "Tim Hortons";
+  if (/shoppers drug/.test(lower)) return "Shoppers Drug Mart";
+  if (/bc hydro|b\.c\. hydro/.test(lower)) return "BC Hydro";
+
+  let s = original
+    .replace(/^sq \*\s*/i, "")
+    .replace(/^tst-\*?\s*/i, "")
+    .replace(/^paypal \*\s*/i, "PayPal ")
+    .replace(/\s+#?\d{3,}\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  s = s.replace(/,?\s+[A-Za-z .'-]+,\s*[A-Z]{2}\b.*$/, "").trim();
+  s = s.replace(/\s{2,}/g, " ");
+  if (s.length > 42) s = s.slice(0, 40).trim();
+  return s || original.slice(0, 42);
+}
+
 function groupByMerchant(tx: Tx[]) {
   const map = new Map<
     string,
@@ -100,9 +136,9 @@ function groupByMerchant(tx: Tx[]) {
     }
   >();
   for (const t of tx) {
-    const key = t.merchant.trim().toLowerCase();
+    const key = shortMerchant(t.merchant).toLowerCase();
     const row = map.get(key) ?? {
-      merchant: t.merchant.trim(),
+      merchant: shortMerchant(t.merchant),
       amounts: [],
       dates: [],
       categoryId: t.categoryId,
@@ -148,8 +184,12 @@ function verdictForGroup(g: {
   if (g.count >= 3 && /dining|eat|coffee|uber|door/.test(g.merchant.toLowerCase() + name)) {
     return "Cap it";
   }
+  if (g.count >= 2 && g.amount >= 60 && /grocer|costco|market|foods/.test((g.categoryName || "") + g.merchant)) {
+    return "Cap it";
+  }
   if (g.count >= 2 && g.amount >= 80 && bucket === "Wants") return "Pick one";
-  if (g.count >= 2 && bucket === "Needs") return "Keep";
+  if (g.count >= 2 && bucket === "Needs" && g.amount < 60) return "Keep";
+  if (g.count >= 2 && bucket === "Needs") return "Cap it";
   if (g.count === 1 && bucket === "Wants" && g.amount >= 60) return "Skip next month";
   if (g.count >= 2) return "Watch";
   return "Fine";
@@ -190,7 +230,14 @@ export function buildDisposition(tx: Tx[], periodLabel: string): {
   const total = sum(groups.map((g) => g.amount));
   const rows: DispositionRow[] = [];
 
-  for (const g of groups.slice(0, 18)) {
+  const ranked = [...groups].sort((a, b) => {
+    const order = ["Main leak", "Cap it", "Pick one", "Skip next month", "Watch", "One-time", "Fine", "Keep", "Fixed"];
+    const d = order.indexOf(verdictForGroup(a)) - order.indexOf(verdictForGroup(b));
+    if (d !== 0) return d;
+    return b.amount - a.amount;
+  });
+
+  for (const g of ranked.slice(0, 14)) {
     const verdict = verdictForGroup(g);
     const countBit =
       g.count > 1
@@ -220,16 +267,7 @@ export function buildDisposition(tx: Tx[], periodLabel: string): {
     });
   }
 
-  // Prefer actionable next step from worst verdict
-  const priority: Verdict[] = ["Main leak", "Cap it", "Pick one", "Skip next month", "Watch"];
-  let nextAction = "Import more spend or tighten one Want category.";
-  for (const v of priority) {
-    const hit = rows.find((r) => r.verdict === v);
-    if (hit?.merchant) {
-      nextAction = actionForVerdict(v, hit.merchant);
-      break;
-    }
-  }
+  const nextAction = concreteNextAction(groups);
 
   let note: string | undefined;
   const rentish = groups.filter((g) => /rent|landlord/i.test(g.merchant + (g.categoryName || "")));
@@ -240,6 +278,43 @@ export function buildDisposition(tx: Tx[], periodLabel: string): {
   }
 
   return { rows, note, nextAction };
+}
+
+/** Always name a real merchant and a dollar figure when any spend exists. */
+function concreteNextAction(
+  groups: Array<{
+    merchant: string;
+    amount: number;
+    count: number;
+    bucket: string | null;
+    categoryName: string | null;
+  }>
+): string {
+  const live = groups.filter(
+    (g) => g.bucket !== "Transfer" && g.bucket !== "Fixed" && !/rent/i.test(g.categoryName || "")
+  );
+  const repeats = live.filter((g) => g.count >= 2).sort((a, b) => b.amount - a.amount);
+  const wants = live
+    .filter((g) => g.bucket === "Wants")
+    .sort((a, b) => b.amount - a.amount || b.count - a.count);
+  const hit = repeats[0] || wants[0] || live.sort((a, b) => b.amount - a.amount)[0];
+  if (!hit) {
+    const fixed = groups.find((g) => /rent/i.test(g.categoryName || "") || g.bucket === "Fixed");
+    if (fixed) {
+      return `${shortMerchant(fixed.merchant)} is $${Math.round(fixed.amount)} and fixed. No discretionary leak in this period yet.`;
+    }
+    return "No purchases in this period yet.";
+  }
+  const name = shortMerchant(hit.merchant);
+  const dollars = Math.round(hit.amount);
+  const half = Math.max(1, Math.round(hit.amount / 2));
+  if (hit.count >= 2) {
+    return `Cap ${name}. ${hit.count} hits are $${dollars} — cut that in half and you keep about $${half}.`;
+  }
+  if (hit.bucket === "Wants") {
+    return `Don't repeat ${name}. That charge was $${dollars}.`;
+  }
+  return `Watch ${name}: $${dollars} so far. One more trip and it becomes a habit.`;
 }
 
 /** "Where the taps are" — frequent small/mid repeats, excluding big one-offs */
@@ -256,7 +331,7 @@ export function buildTaps(tx: Tx[]): {
   const taps = groups
     .filter((g) => !bigIds.has(g.merchant.toLowerCase()))
     .filter((g) => g.count >= 2 || (g.count >= 1 && g.avgAmount <= 45 && g.amount <= 120))
-    .filter((g) => g.avgAmount <= 80)
+    .filter((g) => g.avgAmount <= 100)
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 12);
 
