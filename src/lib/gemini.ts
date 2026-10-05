@@ -106,6 +106,110 @@ export type AiSpendBrief = {
   nextAction: string;
 };
 
+export type AiCsvMapping = {
+  headerless: boolean;
+  amountStyle: "signed" | "debit_credit";
+  date: string;
+  description: string;
+  amount?: string;
+  debit?: string;
+  credit?: string;
+  category?: string;
+  confidence: number;
+  note?: string;
+};
+
+/** Infer bank CSV column mapping from headers + sample rows. */
+export async function aiSuggestCsvMapping(input: {
+  fileName?: string;
+  headers: string[];
+  sampleRows: string[][];
+}): Promise<AiCsvMapping | null> {
+  if (!geminiConfigured()) return null;
+  const headers = input.headers;
+  if (!headers.length) return null;
+
+  const preview = input.sampleRows
+    .slice(0, 8)
+    .map((r, i) => `row${i}: ${JSON.stringify(r)}`)
+    .join("\n");
+
+  const prompt = `You map bank CSV columns for an expense importer (CIBC and similar Canadian banks are common).
+File: ${input.fileName || "statement.csv"}
+
+Column headers (may be real names OR the first data row if the file has no header):
+${headers.map((h, i) => `${i}: ${JSON.stringify(h)}`).join("\n")}
+
+Sample rows (arrays aligned to columns; if headerless, row0 may be the first transaction):
+${preview}
+
+Decide:
+1. headerless — true if "headers" are clearly data values (dates, amounts, long merchant text), not labels like Date/Description/Debit.
+2. amountStyle — "signed" if one amount column (signed or absolute), or "debit_credit" if separate debit and credit columns.
+3. Pick the exact header string from the list above for each role.
+
+Return JSON only:
+{
+  "headerless": true|false,
+  "amountStyle": "signed"|"debit_credit",
+  "date": "<exact header string>",
+  "description": "<exact header string>",
+  "amount": "<exact header or empty>",
+  "debit": "<exact header or empty>",
+  "credit": "<exact header or empty>",
+  "category": "<exact header or empty>",
+  "confidence": 0.0-1.0,
+  "note": "short reason"
+}
+
+Rules:
+- Prefer description/merchant/memo over account numbers.
+- For CIBC-style 4-column no-header files, typical order is Date, Description, Debit, Credit (or Amount, Balance).
+- Ignore balance columns for amount.
+- Use empty string for unused fields.
+- Headers you return MUST be exact copies from the header list.`;
+
+  const result = await geminiGenerateJson<Partial<AiCsvMapping>>(prompt, {
+    temperature: 0.1,
+  });
+  if (!result?.date || !result?.description) return null;
+
+  const allow = new Set(headers);
+  const pick = (v?: string) => {
+    const s = (v ?? "").trim();
+    return s && allow.has(s) ? s : "";
+  };
+
+  const amountStyle =
+    result.amountStyle === "debit_credit" ? "debit_credit" : "signed";
+  const date = pick(result.date);
+  const description = pick(result.description);
+  if (!date || !description) return null;
+
+  const amount = pick(result.amount);
+  const debit = pick(result.debit);
+  const credit = pick(result.credit);
+  const category = pick(result.category) || undefined;
+
+  if (amountStyle === "signed" && !amount && !(debit || credit)) return null;
+
+  return {
+    headerless: Boolean(result.headerless),
+    amountStyle:
+      amountStyle === "signed" && !amount && (debit || credit)
+        ? "debit_credit"
+        : amountStyle,
+    date,
+    description,
+    amount: amount || undefined,
+    debit: debit || undefined,
+    credit: credit || undefined,
+    category,
+    confidence: Math.max(0, Math.min(1, Number(result.confidence) || 0.7)),
+    note: result.note ? String(result.note).slice(0, 160) : undefined,
+  };
+}
+
 /** Deeper period insight on top of rule-based disposition. */
 export async function aiDeepenInsights(input: {
   periodLabel: string;
