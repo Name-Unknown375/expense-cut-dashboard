@@ -1,6 +1,7 @@
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
+  binaryTargets   = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
@@ -11,7 +12,7 @@ datasource db {
 model Category {
   id           String        @id @default(cuid())
   name         String        @unique
-  bucket       String
+  bucket       String        // Needs | Wants | Fixed
   color        String        @default("#64748b")
   sortOrder    Int           @default(0)
   transactions Transaction[]
@@ -24,12 +25,12 @@ model Category {
 model Transaction {
   id          String    @id @default(cuid())
   date        DateTime
-  amount      Float
+  amount      Float     // always positive spend amount
   merchant    String
   note        String?
   categoryId  String?
   category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  source      String    @default("manual")
+  source      String    @default("manual") // manual | csv
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -58,7 +59,7 @@ model ShareLink {
 model SpendingRule {
   id          String    @id @default(cuid())
   name        String
-  type        String
+  type        String    // category_cap | no_new_subs | weekend_only
   categoryId  String?
   category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   limitAmount Float?
@@ -69,7 +70,7 @@ model SpendingRule {
 
 model WeeklyReview {
   id        String   @id @default(cuid())
-  weekStart String   @unique
+  weekStart String   @unique // YYYY-MM-DD (Monday)
   importDone Boolean @default(false)
   cutDone    Boolean @default(false)
   paceDone   Boolean @default(false)
@@ -81,8 +82,8 @@ model WeeklyReview {
 model Settings {
   id                String   @id @default("default")
   monthlyIncome     Float?
-  baselineOverride  Float?
-  csvColumnMapping  String?
+  baselineOverride  Float?   // optional override for usual monthly spend
+  csvColumnMapping  String?  // JSON
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
