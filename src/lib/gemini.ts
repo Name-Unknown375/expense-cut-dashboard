@@ -164,8 +164,12 @@ Return JSON only:
 
 Rules:
 - Prefer description/merchant/memo over account numbers.
-- For CIBC-style 4-column no-header files, typical order is Date, Description, Debit, Credit (or Amount, Balance).
-- Ignore balance columns for amount.
+- CIBC credit-card no-header files are often 5 columns: Date, Description, Debit, Credit, Card#.
+  Debit and Credit are separate — only one is filled per row (spend vs payment).
+  In that case amountStyle MUST be "debit_credit" and both debit+credit headers must be set,
+  even when the first sample row has an empty credit cell.
+- CIBC chequing may be Date, Description, Amount, Balance → amountStyle "signed".
+- Ignore balance / card-number columns for amount.
 - Use empty string for unused fields.
 - Headers you return MUST be exact copies from the header list.`;
 
