@@ -1,0 +1,88 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Category {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  bucket       String
+  color        String        @default("#64748b")
+  sortOrder    Int           @default(0)
+  transactions Transaction[]
+  merchantRules MerchantRule[]
+  spendingRules SpendingRule[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Transaction {
+  id          String    @id @default(cuid())
+  date        DateTime
+  amount      Float
+  merchant    String
+  note        String?
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  source      String    @default("manual")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([date])
+  @@index([merchant])
+  @@index([categoryId])
+}
+
+model MerchantRule {
+  id         String    @id @default(cuid())
+  merchant   String    @unique
+  categoryId String
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model ShareLink {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SpendingRule {
+  id          String    @id @default(cuid())
+  name        String
+  type        String
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  limitAmount Float?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model WeeklyReview {
+  id        String   @id @default(cuid())
+  weekStart String   @unique
+  importDone Boolean @default(false)
+  cutDone    Boolean @default(false)
+  paceDone   Boolean @default(false)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Settings {
+  id                String   @id @default("default")
+  monthlyIncome     Float?
+  baselineOverride  Float?
+  csvColumnMapping  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
