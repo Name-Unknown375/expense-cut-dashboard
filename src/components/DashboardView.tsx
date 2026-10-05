@@ -31,6 +31,7 @@ const verdictStyle: Record<Verdict, string> = {
   Keep: "bg-teal-100 text-teal-900",
   "Skip next month": "bg-fuchsia-100 text-fuchsia-900",
   Watch: "bg-yellow-100 text-yellow-900",
+  "Name this": "bg-violet-100 text-violet-950",
 };
 
 export function DashboardView({
@@ -117,7 +118,11 @@ export function DashboardView({
         <div className="pointer-events-none absolute -right-10 -top-10 h-48 w-48 rounded-full bg-[var(--accent)]/30 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-16 left-20 h-40 w-40 rounded-full bg-emerald-400/20 blur-3xl" />
         <div className="relative grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <HeroStat label="Usual monthly spend" value={money(data.baseline)} hint="Avg of recent months" />
+          <HeroStat
+            label="Usual monthly spend"
+            value={money(data.baseline)}
+            hint={data.rentDoubled ? "One rent payment per month" : "Avg of recent months"}
+          />
           <HeroStat
             label="Target (50%)"
             value={money(data.target)}
@@ -130,7 +135,11 @@ export function DashboardView({
           <HeroStat
             label="Spent in this period"
             value={money(data.spentThisPeriod)}
-            hint={`${pct(data.targetUsedPct)} of target`}
+            hint={
+              data.spendOfIncome != null
+                ? `${pct(data.targetUsedPct)} of target · ${pct(data.spendOfIncome)} of income`
+                : `${pct(data.targetUsedPct)} of target`
+            }
             warn={overTarget}
           />
           <HeroStat
@@ -155,6 +164,7 @@ export function DashboardView({
         <div className="relative mt-5 rounded-xl bg-white/10 px-4 py-3">
           <p className="text-xs uppercase tracking-wide text-white/50">Do this next</p>
           <p className="mt-1 text-lg">{nextAction}</p>
+          {data.pastYou && <p className="mt-1 text-sm text-white/70">{data.pastYou}</p>}
         </div>
         <div className="relative mt-4 h-3 overflow-hidden rounded-full bg-white/15">
           <div
@@ -165,6 +175,104 @@ export function DashboardView({
           />
         </div>
       </section>
+
+      <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm">
+        <h2 className="font-display text-xl text-[var(--ink)]">{data.story.title}</h2>
+        <p className="mt-2 text-sm text-[var(--ink)]">{data.story.lede}</p>
+        {data.story.rentNote && (
+          <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">{data.story.rentNote}</p>
+        )}
+        <ul className="mt-4 divide-y divide-[var(--line)]">
+          {data.story.lines.slice(0, 10).map((line) => (
+            <li key={line.what} className="flex items-center justify-between gap-3 py-2 text-sm">
+              <span>
+                {line.what}
+                {line.detail ? <span className="text-[var(--muted)]"> · {line.detail}</span> : null}
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="font-medium tabular-nums">{moneyExact(line.amount)}</span>
+                <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${verdictStyle[line.verdict]}`}>
+                  {line.verdict}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        {data.story.excluded.length > 0 && (
+          <p className="mt-3 text-sm text-[var(--muted)]">
+            Kept out of the tap story:{" "}
+            {data.story.excluded.map((e) => `${e.name} ${money(e.amount)}`).join(", ")}.
+          </p>
+        )}
+      </section>
+
+      {data.pace.length > 1 && (
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">Pace to the 50% target</h2>
+          <p className="mb-3 text-sm text-[var(--muted)]">
+            Solid line is discretionary spend. Dotted line is the ideal path. Fixed bills ({money(data.fixedSpent)}) stay off this line so rent does not fake a spike.
+          </p>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data.pace}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="variable" name="Discretionary" stroke="#0f766e" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="ideal" name="Ideal pace" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+
+      {(data.capWarnings.length > 0 || data.watchlists.length > 0) && (
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">Caps and watchlists</h2>
+          <ul className="mt-3 space-y-2">
+            {data.capWarnings.map((line) => (
+              <li key={line} className="rounded-lg bg-[var(--wash)] px-3 py-2 text-sm text-[var(--ink)]">
+                {line}
+              </li>
+            ))}
+          </ul>
+          {data.watchlists.length > 0 && (
+            <ul className="mt-3 divide-y divide-[var(--line)] text-sm">
+              {data.watchlists.map((w) => (
+                <li key={w.id} className="flex flex-wrap items-baseline justify-between gap-2 py-2">
+                  <span className="font-medium">{w.label}</span>
+                  <span className="text-[var(--muted)]">
+                    {money(w.spent)} this period · {money(w.avg12)} / mo usual · projected {money(w.projected)} · cap {money(w.capAmount)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!readOnly && <WatchlistForm />}
+        </section>
+      )}
+
+      {data.subscriptions.length > 0 && (
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">Subscriptions</h2>
+          <p className="mb-3 text-sm text-[var(--muted)]">Inferred from charges about a month apart.</p>
+          <ul className="divide-y divide-[var(--line)] text-sm">
+            {data.subscriptions.map((s) => (
+              <li key={s.merchant} className="flex flex-wrap items-baseline justify-between gap-2 py-2">
+                <span>
+                  {s.merchant}
+                  {s.duplicate ? <span className="text-amber-800"> · possible duplicate</span> : null}
+                  {s.jump ? <span className="text-rose-700"> · up {money(s.jump)} vs last charge</span> : null}
+                </span>
+                <span className="text-[var(--muted)]">
+                  {moneyExact(s.lastAmount)} · next around {s.nextDate}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Disposition table — primary actionable insight */}
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm">
@@ -561,6 +669,45 @@ export function DashboardView({
         </section>
       </div>
     </div>
+  );
+}
+
+function WatchlistForm() {
+  const [label, setLabel] = useState("Costco");
+  const [cap, setCap] = useState("400");
+  const router = useRouter();
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    await fetch("/api/watchlists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, capAmount: parseFloat(cap) }),
+    });
+    router.refresh();
+  }
+  return (
+    <form onSubmit={save} className="mt-4 flex flex-wrap items-end gap-2 text-sm">
+      <label>
+        Watch
+        <input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          className="ml-2 rounded-md border border-[var(--line)] px-2 py-1"
+        />
+      </label>
+      <label>
+        Cap
+        <input
+          type="number"
+          value={cap}
+          onChange={(e) => setCap(e.target.value)}
+          className="ml-2 w-24 rounded-md border border-[var(--line)] px-2 py-1"
+        />
+      </label>
+      <button type="submit" className="rounded-md bg-[var(--ink)] px-3 py-1.5 text-white">
+        Save watchlist
+      </button>
+    </form>
   );
 }
 
