@@ -1,4 +1,4 @@
-export type Bucket = "Needs" | "Wants" | "Fixed";
+export type Bucket = "Needs" | "Wants" | "Fixed" | "Transfer";
 
 export const DEFAULT_CATEGORIES: {
   name: string;
@@ -17,6 +17,7 @@ export const DEFAULT_CATEGORIES: {
   { name: "Entertainment", bucket: "Wants", color: "#9333ea", sortOrder: 9 },
   { name: "Travel", bucket: "Wants", color: "#d97706", sortOrder: 10 },
   { name: "Other", bucket: "Needs", color: "#64748b", sortOrder: 11 },
+  { name: "Transfers", bucket: "Transfer", color: "#94a3b8", sortOrder: 12 },
 ];
 
 export function money(n: number): string {

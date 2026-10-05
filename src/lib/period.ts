@@ -43,7 +43,11 @@ export function resolvePeriod(spec: PeriodSpec = {}, now = new Date()): Resolved
   const mode = spec.mode || (spec.from && spec.to ? "range" : spec.year ? "year" : "month");
 
   if (mode === "year") {
-    const y = Number(spec.year || format(now, "yyyy"));
+    const parsedYear = Number(spec.year);
+    const y =
+      Number.isFinite(parsedYear) && parsedYear >= 1990 && parsedYear <= 2200
+        ? parsedYear
+        : Number(format(now, "yyyy"));
     const start = startOfYear(new Date(y, 0, 1));
     const end = endOfYear(new Date(y, 0, 1));
     const prevStart = startOfYear(new Date(y - 1, 0, 1));
@@ -61,9 +65,11 @@ export function resolvePeriod(spec: PeriodSpec = {}, now = new Date()): Resolved
     };
   }
 
-  if (mode === "range" && spec.from && spec.to) {
-    let start = parseISO(spec.from);
-    let end = parseISO(spec.to);
+  const rangeStart = validDay(spec.from);
+  const rangeEnd = validDay(spec.to);
+  if (mode === "range" && rangeStart && rangeEnd) {
+    let start = rangeStart;
+    let end = rangeEnd;
     if (end < start) [start, end] = [end, start];
     // inclusive end of day
     end = new Date(end);
@@ -111,6 +117,12 @@ export function resolvePeriod(spec: PeriodSpec = {}, now = new Date()): Resolved
     dayCount: differenceInCalendarDays(end, start) + 1,
     isCurrentMonth: isCurrent,
   };
+}
+
+function validDay(iso?: string): Date | null {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const d = parseISO(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 export function periodFromSearchParams(sp: {

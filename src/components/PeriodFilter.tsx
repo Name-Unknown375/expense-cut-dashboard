@@ -54,10 +54,32 @@ export function loadStickyPeriod(fallbackMonth?: string): PeriodState {
 }
 
 export function periodToQuery(p: PeriodState): string {
-  if (p.mode === "year") return `period=year&year=${encodeURIComponent(p.year)}`;
-  if (p.mode === "range")
-    return `period=range&from=${encodeURIComponent(p.from)}&to=${encodeURIComponent(p.to)}`;
-  return `period=month&month=${encodeURIComponent(p.month)}`;
+  const filled = withDefaults(p);
+  if (filled.mode === "year") return `period=year&year=${encodeURIComponent(filled.year)}`;
+  if (filled.mode === "range")
+    return `period=range&from=${encodeURIComponent(filled.from)}&to=${encodeURIComponent(filled.to)}`;
+  return `period=month&month=${encodeURIComponent(filled.month)}`;
+}
+
+function withDefaults(p: PeriodState): PeriodState {
+  const base = todayParts();
+  return {
+    mode: p.mode || "month",
+    month: /^\d{4}-\d{2}$/.test(p.month || "") ? p.month : base.month,
+    year: /^\d{4}$/.test(p.year || "") ? p.year : base.year,
+    from: /^\d{4}-\d{2}-\d{2}$/.test(p.from || "") ? p.from : base.from,
+    to: /^\d{4}-\d{2}-\d{2}$/.test(p.to || "") ? p.to : base.to,
+  };
+}
+
+function mergePeriod(base: PeriodState, initial?: Partial<PeriodState>): PeriodState {
+  return withDefaults({
+    mode: initial?.mode || base.mode,
+    month: initial?.month || base.month,
+    year: initial?.year || base.year,
+    from: initial?.from || base.from,
+    to: initial?.to || base.to,
+  });
 }
 
 export function PeriodFilter({
@@ -68,11 +90,9 @@ export function PeriodFilter({
   readOnly?: boolean;
 }) {
   const router = useRouter();
-  const [state, setState] = useState<PeriodState>(() => ({
-    ...loadStickyPeriod(initial?.month),
-    ...initial,
-    mode: (initial?.mode as PeriodMode) || "month",
-  }));
+  const [state, setState] = useState<PeriodState>(() =>
+    mergePeriod(loadStickyPeriod(initial?.month), initial)
+  );
 
   useEffect(() => {
     if (readOnly) return;
@@ -80,10 +100,11 @@ export function PeriodFilter({
   }, [state, readOnly]);
 
   function apply(next: PeriodState) {
-    setState(next);
+    const filled = withDefaults(next);
+    setState(filled);
     if (!readOnly) {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      router.push(`/?${periodToQuery(next)}`);
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(filled));
+      router.push(`/?${periodToQuery(filled)}`);
     }
   }
 
