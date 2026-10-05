@@ -1,1 +1,0 @@
-$file:/tmp/size100.txt
