@@ -3,32 +3,35 @@ import { prisma } from "@/lib/db";
 import { ensureSeeded } from "@/lib/seed";
 import { rememberMerchant, resolveCategoryId } from "@/lib/autocat";
 import { aiCategorizeMerchants, geminiConfigured } from "@/lib/gemini";
+import {
+  colIndex,
+  dedupeKey,
+  normalizeMerchant,
+  parseBankDate,
+} from "@/lib/csv-mapping";
 import Papa from "papaparse";
 import { z } from "zod";
-import { format } from "date-fns";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const mappingSchema = z.object({
-  date: z.string(),
-  amount: z.string().optional(),
-  debit: z.string().optional(),
-  credit: z.string().optional(),
-  description: z.string(),
-  category: z.string().optional(),
+  date: z.string().min(1),
+  amount: z.string().optional().nullable(),
+  debit: z.string().optional().nullable(),
+  credit: z.string().optional().nullable(),
+  description: z.string().min(1),
+  category: z.string().optional().nullable(),
   amountStyle: z.enum(["signed", "debit_credit"]).default("signed"),
-  /** When true, CSV has no header row; fields are col_0, col_1, … */
   headerless: z.boolean().optional().default(false),
 });
 
-export type Mapping = z.infer<typeof mappingSchema>;
+type Mapping = z.infer<typeof mappingSchema>;
 
-function dedupeKey(date: Date, amount: number, merchant: string) {
-  return `${format(date, "yyyy-MM-dd")}|${amount.toFixed(2)}|${merchant.trim().toLowerCase()}`;
-}
-
-function colIndex(key: string | undefined): number {
-  if (!key) return -1;
-  const m = /^col_(\d+)$/.exec(key);
-  return m ? parseInt(m[1], 10) : -1;
+function parseMoney(raw: string | undefined): number {
+  if (raw == null || !String(raw).trim()) return 0;
+  const n = parseFloat(String(raw).replace(/[$,]/g, ""));
+  return Number.isFinite(n) ? n : 0;
 }
 
 function rowsAsRecords(
@@ -38,21 +41,23 @@ function rowsAsRecords(
   if (mapping.headerless) {
     const parsed = Papa.parse<string[]>(text, {
       header: false,
-      skipEmptyLines: true,
+      skipEmptyLines: "greedy",
     });
-    const maxCols = Math.max(0, ...parsed.data.map((r) => r.length));
+    const maxCols = Math.max(0, ...parsed.data.map((r) => (Array.isArray(r) ? r.length : 0)));
     const headers = Array.from({ length: maxCols }, (_, i) => `col_${i}`);
-    const rows = parsed.data.map((arr) => {
-      const rec: Record<string, string> = {};
-      for (let i = 0; i < maxCols; i++) rec[`col_${i}`] = String(arr[i] ?? "").trim();
-      return rec;
-    });
+    const rows = parsed.data
+      .filter((arr) => Array.isArray(arr) && arr.some((c) => String(c ?? "").trim()))
+      .map((arr) => {
+        const rec: Record<string, string> = {};
+        for (let i = 0; i < maxCols; i++) rec[`col_${i}`] = String(arr[i] ?? "").trim();
+        return rec;
+      });
     return { rows, headers };
   }
 
   const parsed = Papa.parse<Record<string, string>>(text, {
     header: true,
-    skipEmptyLines: true,
+    skipEmptyLines: "greedy",
   });
   return {
     rows: parsed.data.map((r) => {
@@ -81,6 +86,22 @@ type PendingRow = {
   source: "csv" | "memory" | "heuristic" | "other" | "none" | "ai";
 };
 
+function validateMapping(mapping: Mapping): string | null {
+  if (mapping.headerless) {
+    for (const key of [mapping.date, mapping.description]) {
+      if (colIndex(key) < 0) {
+        return `Headerless mapping needs col_N keys (got date=${mapping.date}, description=${mapping.description})`;
+      }
+    }
+  }
+  if (mapping.amountStyle === "signed") {
+    if (!mapping.amount) return "Amount column required for single-amount style";
+  } else if (!mapping.debit && !mapping.credit) {
+    return "Debit or credit column required for debit/credit style";
+  }
+  return null;
+}
+
 async function parseFileRows(
   file: File,
   mapping: Mapping,
@@ -95,15 +116,6 @@ async function parseFileRows(
   let duplicates = 0;
   const pending: PendingRow[] = [];
 
-  // Validate headerless keys reference real columns when possible
-  if (mapping.headerless) {
-    for (const key of [mapping.date, mapping.description, mapping.amount, mapping.debit, mapping.credit]) {
-      if (key && colIndex(key) < 0) {
-        /* non col_* keys ignored — rowsAsRecords only exposes col_N */
-      }
-    }
-  }
-
   for (const row of rows) {
     const dateStr = (row[mapping.date] ?? "").trim();
     const merchant = (row[mapping.description] ?? "").trim();
@@ -114,26 +126,28 @@ async function parseFileRows(
 
     let amount = 0;
     if (mapping.amountStyle === "debit_credit") {
-      const debit =
-        parseFloat(String(row[mapping.debit ?? ""] ?? "").replace(/[$,]/g, "")) || 0;
-      const credit =
-        parseFloat(String(row[mapping.credit ?? ""] ?? "").replace(/[$,]/g, "")) || 0;
-      amount = debit > 0 ? debit : credit > 0 ? credit : 0;
-      if (debit <= 0 && credit > 0) {
+      const debit = parseMoney(row[mapping.debit ?? ""]);
+      const credit = parseMoney(row[mapping.credit ?? ""]);
+      // Expense tracker: import debits (spend). Skip pure credits (payments/refunds).
+      if (debit > 0) amount = debit;
+      else if (credit > 0) {
+        skipped += 1;
+        continue;
+      } else {
         skipped += 1;
         continue;
       }
     } else {
-      const raw = parseFloat(String(row[mapping.amount ?? ""] ?? "").replace(/[$,]/g, ""));
-      if (!Number.isFinite(raw) || raw === 0) {
+      const raw = parseMoney(row[mapping.amount ?? ""]);
+      if (!raw) {
         skipped += 1;
         continue;
       }
       amount = Math.abs(raw);
     }
 
-    const date = new Date(dateStr);
-    if (Number.isNaN(date.getTime())) {
+    const date = parseBankDate(dateStr);
+    if (!date) {
       skipped += 1;
       continue;
     }
@@ -143,11 +157,13 @@ async function parseFileRows(
       duplicates += 1;
       continue;
     }
-    // Reserve key so later files in the same batch also dedupe
+    // Reserve so later files / rows in this batch also dedupe
     existingKeys.add(key);
 
     const csvCategory =
-      mapping.category && row[mapping.category] ? row[mapping.category].trim() : null;
+      mapping.category && row[mapping.category]
+        ? row[mapping.category].trim()
+        : null;
     const resolved = resolveCategoryId(merchant, {
       ruleMap,
       catByName,
@@ -174,126 +190,169 @@ async function parseFileRows(
 }
 
 export async function POST(request: Request) {
-  await ensureSeeded();
-  const form = await request.formData();
-  const mappingRaw = form.get("mapping");
-  if (typeof mappingRaw !== "string") {
-    return NextResponse.json({ error: "mapping required" }, { status: 400 });
-  }
-
-  const mapping = mappingSchema.parse(JSON.parse(mappingRaw));
-  await prisma.settings.upsert({
-    where: { id: "default" },
-    create: { id: "default", csvColumnMapping: JSON.stringify(mapping) },
-    update: { csvColumnMapping: JSON.stringify(mapping), aiCacheJson: null },
-  });
-
-  const files: File[] = [];
-  const multi = form.getAll("files");
-  for (const f of multi) {
-    if (f instanceof File && f.size > 0) files.push(f);
-  }
-  const single = form.get("file");
-  if (files.length === 0 && single instanceof File) files.push(single);
-  if (files.length === 0) {
-    return NextResponse.json({ error: "file(s) required" }, { status: 400 });
-  }
-
-  const merchantRules = await prisma.merchantRule.findMany();
-  const ruleMap = new Map(merchantRules.map((r) => [r.merchant, r.categoryId]));
-  const categories = await prisma.category.findMany();
-  const catByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
-  const categoryNames = categories.map((c) => c.name);
-
-  const existing = await prisma.transaction.findMany({
-    select: { date: true, amount: true, merchant: true },
-  });
-  const existingKeys = new Set(
-    existing.map((t) => dedupeKey(t.date, t.amount, t.merchant))
-  );
-
-  const parsedFiles = [];
-  for (const file of files) {
-    parsedFiles.push(await parseFileRows(file, mapping, existingKeys, ruleMap, catByName));
-  }
-
-  // AI pass for merchants that only hit Other / none
-  const needsAi = new Set<string>();
-  for (const f of parsedFiles) {
-    for (const row of f.pending) {
-      if (row.source === "other" || row.source === "none") {
-        needsAi.add(row.merchant);
-      }
+  try {
+    await ensureSeeded();
+    const form = await request.formData();
+    const mappingRaw = form.get("mapping");
+    if (typeof mappingRaw !== "string") {
+      return NextResponse.json({ error: "mapping required" }, { status: 400 });
     }
-  }
 
-  let aiLabeled = 0;
-  if (needsAi.size > 0 && geminiConfigured()) {
-    const aiMap = await aiCategorizeMerchants(Array.from(needsAi), categoryNames);
+    let mapping: Mapping;
+    try {
+      mapping = mappingSchema.parse(JSON.parse(mappingRaw));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Invalid mapping JSON";
+      return NextResponse.json({ error: `Invalid mapping: ${msg}` }, { status: 400 });
+    }
+
+    const mappingError = validateMapping(mapping);
+    if (mappingError) {
+      return NextResponse.json({ error: mappingError }, { status: 400 });
+    }
+
+    // Persist mapping for next time (append-only imports — never wipe transactions)
+    await prisma.settings.upsert({
+      where: { id: "default" },
+      create: { id: "default", csvColumnMapping: JSON.stringify(mapping) },
+      update: { csvColumnMapping: JSON.stringify(mapping), aiCacheJson: null },
+    });
+
+    const files: File[] = [];
+    const multi = form.getAll("files");
+    for (const f of multi) {
+      if (f instanceof File && f.size > 0) files.push(f);
+    }
+    const single = form.get("file");
+    if (files.length === 0 && single instanceof File) files.push(single);
+    if (files.length === 0) {
+      return NextResponse.json({ error: "file(s) required" }, { status: 400 });
+    }
+
+    const merchantRules = await prisma.merchantRule.findMany();
+    const ruleMap = new Map(merchantRules.map((r) => [r.merchant, r.categoryId]));
+    const categories = await prisma.category.findMany();
+    const catByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
+    const categoryNames = categories.map((c) => c.name);
+
+    // Load ALL existing keys for strong cross-import dedupe (append-only)
+    const existing = await prisma.transaction.findMany({
+      select: { date: true, amount: true, merchant: true },
+    });
+    const existingKeys = new Set(
+      existing.map((t) => dedupeKey(t.date, t.amount, t.merchant))
+    );
+
+    const parsedFiles = [];
+    for (const file of files) {
+      parsedFiles.push(await parseFileRows(file, mapping, existingKeys, ruleMap, catByName));
+    }
+
+    // AI pass — best-effort, capped so large CSVs don't time out the whole import
+    const needsAi = new Set<string>();
     for (const f of parsedFiles) {
       for (const row of f.pending) {
-        if (row.source !== "other" && row.source !== "none") continue;
-        const catName = aiMap.get(row.merchant.trim().toLowerCase());
-        if (!catName) continue;
-        const id = catByName.get(catName.toLowerCase());
-        if (!id) continue;
-        row.categoryId = id;
-        row.source = "ai";
-        aiLabeled += 1;
-        await rememberMerchant(prisma, row.merchant, id);
-        ruleMap.set(row.merchant.trim().toLowerCase(), id);
+        if (row.source === "other" || row.source === "none") needsAi.add(row.merchant);
       }
     }
-  }
 
-  const results = [];
-  let totalImported = 0;
-  let totalDup = 0;
-  let totalSkip = 0;
-  let totalAuto = 0;
+    let aiLabeled = 0;
+    let aiWarning: string | undefined;
+    if (needsAi.size > 0 && geminiConfigured()) {
+      try {
+        const batch = Array.from(needsAi).slice(0, 40);
+        const aiMap = await Promise.race([
+          aiCategorizeMerchants(batch, categoryNames),
+          new Promise<Map<string, string>>((resolve) =>
+            setTimeout(() => resolve(new Map()), 12_000)
+          ),
+        ]);
+        for (const f of parsedFiles) {
+          for (const row of f.pending) {
+            if (row.source !== "other" && row.source !== "none") continue;
+            const catName = aiMap.get(row.merchant.trim().toLowerCase());
+            const id = catName ? catByName.get(catName.toLowerCase()) : null;
+            if (!id) continue;
+            row.categoryId = id;
+            row.source = "ai";
+            aiLabeled += 1;
+            await rememberMerchant(prisma, row.merchant, id);
+            ruleMap.set(normalizeMerchant(row.merchant), id);
+          }
+        }
+        if (needsAi.size > batch.length) {
+          aiWarning = `Auto-labeled ${batch.length} of ${needsAi.size} unknown merchants (rest → Other).`;
+        }
+      } catch {
+        aiWarning = "Gemini categorization timed out — rows kept with heuristic/Other labels.";
+      }
+    }
 
-  for (const f of parsedFiles) {
-    let imported = 0;
-    let autoCategorized = 0;
-    for (const row of f.pending) {
-      await prisma.transaction.create({
-        data: {
-          date: row.date,
-          amount: row.amount,
-          merchant: row.merchant,
-          categoryId: row.categoryId,
-          source: "csv",
-        },
+    const results = [];
+    let totalImported = 0;
+    let totalDup = 0;
+    let totalSkip = 0;
+    let totalAuto = 0;
+
+    for (const f of parsedFiles) {
+      // Batch insert — append only; never delete/overwrite existing txs
+      const chunkSize = 50;
+      for (let i = 0; i < f.pending.length; i += chunkSize) {
+        const chunk = f.pending.slice(i, i + chunkSize);
+        await prisma.transaction.createMany({
+          data: chunk.map((row) => ({
+            date: row.date,
+            amount: row.amount,
+            merchant: row.merchant,
+            categoryId: row.categoryId,
+            source: "csv",
+          })),
+        });
+      }
+
+      // Remember merchants for future imports (non-fatal)
+      for (const row of f.pending) {
+        if (!row.categoryId) continue;
+        if (row.source === "csv" || row.source === "heuristic" || row.source === "ai") {
+          try {
+            await rememberMerchant(prisma, row.merchant, row.categoryId);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      const imported = f.pending.length;
+      const autoCategorized = f.pending.filter((r) => r.categoryId).length;
+      results.push({
+        fileName: f.fileName,
+        headers: f.headers,
+        imported,
+        duplicates: f.duplicates,
+        skipped: f.skipped,
+        rows: f.rows,
+        autoCategorized,
       });
-      imported += 1;
-      if (row.categoryId) autoCategorized += 1;
-      if (row.source === "csv" || row.source === "heuristic") {
-        await rememberMerchant(prisma, row.merchant, row.categoryId!);
-        ruleMap.set(row.merchant.trim().toLowerCase(), row.categoryId!);
-      }
+      totalImported += imported;
+      totalDup += f.duplicates;
+      totalSkip += f.skipped;
+      totalAuto += autoCategorized;
     }
-    results.push({
-      fileName: f.fileName,
-      headers: f.headers,
-      imported,
-      duplicates: f.duplicates,
-      skipped: f.skipped,
-      rows: f.rows,
-      autoCategorized,
-    });
-    totalImported += imported;
-    totalDup += f.duplicates;
-    totalSkip += f.skipped;
-    totalAuto += autoCategorized;
-  }
 
-  return NextResponse.json({
-    files: results,
-    imported: totalImported,
-    duplicates: totalDup,
-    skipped: totalSkip,
-    autoCategorized: totalAuto,
-    aiLabeled,
-    aiEnabled: geminiConfigured(),
-  });
+    return NextResponse.json({
+      files: results,
+      imported: totalImported,
+      duplicates: totalDup,
+      skipped: totalSkip,
+      autoCategorized: totalAuto,
+      aiLabeled,
+      aiEnabled: geminiConfigured(),
+      warning: aiWarning,
+      dedupe: "date+amount+normalized merchant — re-imports skip duplicates; existing data is never wiped",
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Import failed";
+    console.error("import error", e);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
