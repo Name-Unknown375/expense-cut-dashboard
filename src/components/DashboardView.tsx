@@ -5,6 +5,8 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,8 +15,22 @@ import {
 } from "recharts";
 import { money, moneyExact, pct } from "@/lib/categories";
 import type { DashboardData } from "@/lib/analytics";
+import type { Verdict } from "@/lib/insights";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { PeriodFilter } from "./PeriodFilter";
+
+const verdictStyle: Record<Verdict, string> = {
+  Fixed: "bg-slate-200 text-slate-800",
+  "One-time": "bg-sky-100 text-sky-900",
+  "Main leak": "bg-rose-200 text-rose-900",
+  "Cap it": "bg-orange-200 text-orange-950",
+  "Pick one": "bg-amber-200 text-amber-950",
+  Fine: "bg-emerald-100 text-emerald-900",
+  Keep: "bg-teal-100 text-teal-900",
+  "Skip next month": "bg-fuchsia-100 text-fuchsia-900",
+  Watch: "bg-yellow-100 text-yellow-900",
+};
 
 export function DashboardView({
   data,
@@ -25,7 +41,16 @@ export function DashboardView({
 }) {
   const router = useRouter();
   const [weekly, setWeekly] = useState(data.weekly);
-  const overTarget = data.spentThisMonth > data.target;
+  const overTarget = data.spentThisPeriod > data.target;
+  const periodQs = new URLSearchParams(data.period.query).toString();
+  const showMonthTrend = (data.byMonth?.length ?? 0) > 1;
+  const showDay = (data.byDay?.length ?? 0) > 1;
+  const showWeek = (data.byWeek?.length ?? 0) > 1 && !showDay;
+
+  function openCategory(categoryId: string) {
+    if (readOnly) return;
+    router.push(`/category/${categoryId}?${periodQs}`);
+  }
 
   async function toggleWeekly(field: "importDone" | "cutDone" | "paceDone") {
     if (readOnly) return;
@@ -43,30 +68,29 @@ export function DashboardView({
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-sm uppercase tracking-[0.14em] text-[var(--accent)]">
-            {data.monthLabel}
-          </p>
-          <h1 className="font-display text-3xl text-[var(--ink)] sm:text-4xl">
-            Cut waste. Hit your target.
-          </h1>
-          <p className="mt-1 max-w-xl text-[var(--muted)]">
-            Usual spend sets the bar. Target is half of that. Stay under it.
-          </p>
-        </div>
-        {!readOnly && (
-          <label className="text-sm text-[var(--muted)]">
-            Month{" "}
-            <input
-              type="month"
-              defaultValue={data.month}
-              className="ml-2 rounded-md border border-[var(--line)] bg-white px-2 py-1 text-[var(--ink)]"
-              onChange={(e) => router.push(`/?month=${e.target.value}`)}
-            />
-          </label>
-        )}
+      <div>
+        <p className="text-sm uppercase tracking-[0.14em] text-[var(--accent)]">
+          {data.period.label}
+        </p>
+        <h1 className="font-display text-3xl text-[var(--ink)] sm:text-4xl">
+          Cut waste. Hit your target.
+        </h1>
+        <p className="mt-1 max-w-xl text-[var(--muted)]">
+          Verdicts first — then the charts. Every line should answer what to do next.
+        </p>
       </div>
+
+      {!readOnly && (
+        <PeriodFilter
+          initial={{
+            mode: data.period.mode,
+            month: data.period.query.month,
+            year: data.period.query.year,
+            from: data.period.query.from,
+            to: data.period.query.to,
+          }}
+        />
+      )}
 
       {/* Hero */}
       <section className="relative overflow-hidden rounded-2xl bg-[var(--ink)] px-6 py-7 text-white shadow-lg">
@@ -74,27 +98,45 @@ export function DashboardView({
         <div className="pointer-events-none absolute -bottom-16 left-20 h-40 w-40 rounded-full bg-emerald-400/20 blur-3xl" />
         <div className="relative grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           <HeroStat label="Usual monthly spend" value={money(data.baseline)} hint="Avg of recent months" />
-          <HeroStat label="Target (50%)" value={money(data.target)} hint="Half of usual" />
           <HeroStat
-            label="Spent this month"
-            value={money(data.spentThisMonth)}
+            label="Target (50%)"
+            value={money(data.target)}
+            hint={
+              data.period.mode === "month"
+                ? "Half of usual"
+                : "Half of usual, scaled to this period"
+            }
+          />
+          <HeroStat
+            label="Spent in this period"
+            value={money(data.spentThisPeriod)}
             hint={`${pct(data.targetUsedPct)} of target`}
             warn={overTarget}
           />
           <HeroStat
-            label="Still can spend"
-            value={money(data.remaining)}
-            hint={`Projected month-end ${money(data.projected)}`}
-            warn={data.projected > data.target}
+            label={data.period.mode === "month" ? "Still can spend" : "vs prior period"}
+            value={
+              data.period.mode === "month"
+                ? money(data.remaining)
+                : money(data.spentThisPeriod - data.spentPrevPeriod)
+            }
+            hint={
+              data.period.mode === "month"
+                ? `Projected period-end ${money(data.projected)}`
+                : `Prior window ${money(data.spentPrevPeriod)}`
+            }
+            warn={
+              data.period.mode === "month"
+                ? data.projected > data.target
+                : data.spentThisPeriod > data.spentPrevPeriod
+            }
           />
         </div>
-        {data.spendOfIncome != null && (
-          <p className="relative mt-4 text-sm text-white/70">
-            Spend is {pct(data.spendOfIncome)} of your monthly income
-            {data.income ? ` (${money(data.income)})` : ""}.
-          </p>
-        )}
-        <div className="relative mt-5 h-3 overflow-hidden rounded-full bg-white/15">
+        <div className="relative mt-5 rounded-xl bg-white/10 px-4 py-3">
+          <p className="text-xs uppercase tracking-wide text-white/50">Do this next</p>
+          <p className="mt-1 text-lg">{data.disposition.nextAction}</p>
+        </div>
+        <div className="relative mt-4 h-3 overflow-hidden rounded-full bg-white/15">
           <div
             className={`h-full rounded-full transition-all ${
               overTarget ? "bg-rose-400" : "bg-emerald-400"
@@ -102,109 +144,107 @@ export function DashboardView({
             style={{ width: `${Math.min(100, data.targetUsedPct)}%` }}
           />
         </div>
-        <p className="relative mt-2 text-sm text-white/70">
-          {data.gapToClose > 0
-            ? `Pace is above target by about ${money(data.gapToClose)} this month.`
-            : "Pace looks on track for the 50% target."}
-        </p>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Categories */}
-        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
-          <h2 className="font-display text-xl text-[var(--ink)]">By category</h2>
-          <p className="mb-4 text-sm text-[var(--muted)]">Dollars and share of spend</p>
-          <div className="mb-4 flex flex-wrap gap-2">
-            {data.byBucket.map((b) => (
-              <span
-                key={b.bucket}
-                className="rounded-md bg-[var(--wash)] px-2.5 py-1 text-xs text-[var(--ink)]"
+      {/* Disposition table — primary actionable insight */}
+      <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm">
+        <div className="mb-1 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="font-display text-xl text-[var(--ink)]">What to do with this spend</h2>
+            <p className="text-sm text-[var(--muted)]">
+              What · Amount · Verdict — plain calls, not a dump
+            </p>
+          </div>
+        </div>
+        {data.disposition.note && (
+          <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {data.disposition.note}
+          </p>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] text-left text-sm">
+            <thead>
+              <tr className="text-[var(--muted)]">
+                <th className="pb-2 font-medium">What</th>
+                <th className="pb-2 font-medium">Amount</th>
+                <th className="pb-2 font-medium">Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.disposition.rows.map((row) => (
+                <tr key={row.id} className="border-t border-[var(--line)]">
+                  <td className="py-2.5 pr-3">
+                    {readOnly || !row.categoryId ? (
+                      <span className="text-[var(--ink)]">{row.what}</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openCategory(row.categoryId!)}
+                        className="text-left text-[var(--ink)] hover:underline"
+                      >
+                        {row.what}
+                      </button>
+                    )}
+                  </td>
+                  <td className="py-2.5 font-medium tabular-nums">
+                    {moneyExact(row.amount)}
+                  </td>
+                  <td className="py-2.5">
+                    <span
+                      className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${verdictStyle[row.verdict]}`}
+                    >
+                      {row.verdict}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Where the taps are */}
+      {data.taps.lines.length > 0 && (
+        <section className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--ink)] px-6 py-6 text-white shadow-lg">
+          <div className="pointer-events-none absolute -left-8 top-0 h-40 w-40 rounded-full bg-[var(--accent)]/25 blur-3xl" />
+          <h2 className="font-display relative text-2xl">Where the taps are</h2>
+          <p className="relative mt-2 max-w-2xl text-sm text-white/75">{data.taps.intro}</p>
+          <ul className="relative mt-4 space-y-2">
+            {data.taps.lines.map((line) => (
+              <li
+                key={line.id}
+                className="flex flex-wrap items-baseline justify-between gap-2 border-b border-white/10 pb-2 text-sm last:border-0"
               >
-                {b.bucket}: {money(b.amount)} ({pct(b.pct)})
-              </span>
-            ))}
-          </div>
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data.byCategory.slice(0, 8)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={50} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => moneyExact(Number(v))} />
-                <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
-                  {data.byCategory.slice(0, 8).map((c) => (
-                    <Cell key={c.id} fill={c.color} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          <ul className="mt-3 divide-y divide-[var(--line)]">
-            {data.byCategory.map((c) => (
-              <li key={c.id} className="flex items-center justify-between py-2 text-sm">
-                {readOnly ? (
-                  <span className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: c.color }} />
-                    {c.name}
-                    <span className="text-[var(--muted)]">{c.bucket}</span>
+                {readOnly || !line.categoryId ? (
+                  <span>
+                    <span className="font-medium">{line.merchant}</span>
+                    <span className="text-white/60">, {line.phrase}</span>
                   </span>
                 ) : (
-                  <Link
-                    href={`/transactions?categoryId=${c.id}&month=${data.month}`}
-                    className="flex items-center gap-2 hover:underline"
+                  <button
+                    type="button"
+                    onClick={() => openCategory(line.categoryId!)}
+                    className="text-left hover:underline"
                   >
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: c.color }} />
-                    {c.name}
-                    <span className="text-[var(--muted)]">{c.bucket}</span>
-                  </Link>
+                    <span className="font-medium">{line.merchant}</span>
+                    <span className="text-white/60">, {line.phrase}</span>
+                  </button>
                 )}
-                <span className="font-medium">
-                  {moneyExact(c.amount)} · {pct(c.pct)}
+                <span className="font-display text-base tabular-nums">
+                  {moneyExact(line.amount)}
                 </span>
               </li>
             ))}
           </ul>
+          <p className="relative mt-4 text-sm text-white/80">{data.taps.outro}</p>
         </section>
+      )}
 
-        {/* Merchants */}
-        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
-          <h2 className="font-display text-xl text-[var(--ink)]">Top merchants</h2>
-          <p className="mb-4 text-sm text-[var(--muted)]">Where the money went</p>
-          <ul className="space-y-2">
-            {data.topMerchants.map((m) => (
-              <li
-                key={m.merchant}
-                className="flex items-center justify-between rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
-              >
-                <div>
-                  <div className="font-medium text-[var(--ink)]">
-                    {m.merchant}
-                    {m.recurring && (
-                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
-                        Recurring
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-[var(--muted)]">
-                    {m.count} purchase{m.count === 1 ? "" : "s"}
-                    {m.category ? ` · ${m.category}` : ""}
-                  </div>
-                </div>
-                <div className="font-medium">{moneyExact(m.amount)}</div>
-              </li>
-            ))}
-            {data.topMerchants.length === 0 && (
-              <p className="text-sm text-[var(--muted)]">No spend this month yet.</p>
-            )}
-          </ul>
-        </section>
-      </div>
-
-      {/* Waste / cut list */}
+      {/* Waste / cut list — keep, actionable */}
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
         <h2 className="font-display text-xl text-[var(--ink)]">Waste & cut list</h2>
         <p className="mb-4 text-sm text-[var(--muted)]">
-          Ranked actions that close the gap to your 50% target
+          Ranked moves that close the gap to your 50% target
         </p>
         <div className="grid gap-3 md:grid-cols-2">
           {data.cutList.map((item, i) => (
@@ -224,7 +264,7 @@ export function DashboardView({
                   <div className="font-display text-lg text-[var(--ink)]">
                     {money(item.estimatedMonthly)}
                   </div>
-                  <div className="text-xs text-[var(--muted)]">/mo savings</div>
+                  <div className="text-xs text-[var(--muted)]">est. savings</div>
                 </div>
               </div>
               <p className="mt-3 text-sm text-[var(--ink)]">
@@ -241,19 +281,177 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* Month comparison */}
+      {/* Trend charts — polish */}
+      {(showMonthTrend || showDay || showWeek) && (
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">
+            {showMonthTrend ? "Spend by month" : showDay ? "Spend by day" : "Spend by week"}
+          </h2>
+          <p className="mb-4 text-sm text-[var(--muted)]">
+            Pattern check for {data.period.label}
+          </p>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              {showMonthTrend || showWeek ? (
+                <BarChart data={showMonthTrend ? data.byMonth : data.byWeek}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v) => moneyExact(Number(v))} />
+                  <Bar dataKey="amount" fill="#c45c26" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              ) : (
+                <LineChart data={data.byDay}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v) => moneyExact(Number(v))} />
+                  <Line type="monotone" dataKey="amount" stroke="#c45c26" strokeWidth={2} dot={false} />
+                </LineChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">By category</h2>
+          <p className="mb-4 text-sm text-[var(--muted)]">
+            Click a bar or name for taps, one-offs, and what to cut
+          </p>
+          <div className="mb-4 flex flex-wrap gap-2">
+            {data.byBucket.map((b) => (
+              <span
+                key={b.bucket}
+                className="rounded-md bg-[var(--wash)] px-2.5 py-1 text-xs text-[var(--ink)]"
+              >
+                {b.bucket}: {money(b.amount)} ({pct(b.pct)})
+              </span>
+            ))}
+          </div>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={data.byCategory.slice(0, 8)}
+                style={{ cursor: readOnly ? "default" : "pointer" }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 11 }}
+                  interval={0}
+                  angle={-20}
+                  textAnchor="end"
+                  height={50}
+                />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => moneyExact(Number(v))} />
+                <Bar
+                  dataKey="amount"
+                  radius={[4, 4, 0, 0]}
+                  onClick={(entry) => {
+                    const id = (entry as { id?: string })?.id;
+                    if (id) openCategory(id);
+                  }}
+                >
+                  {data.byCategory.slice(0, 8).map((c) => (
+                    <Cell key={c.id} fill={c.color} cursor={readOnly ? "default" : "pointer"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <ul className="mt-3 divide-y divide-[var(--line)]">
+            {data.byCategory.map((c) => (
+              <li key={c.id} className="flex items-center justify-between py-2 text-sm">
+                {readOnly ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: c.color }} />
+                    {c.name}
+                    <span className="text-[var(--muted)]">{c.bucket}</span>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => openCategory(c.id)}
+                    className="flex items-center gap-2 text-left hover:underline"
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: c.color }} />
+                    {c.name}
+                    <span className="text-[var(--muted)]">{c.bucket}</span>
+                    <span className="text-xs text-[var(--accent)]">Open →</span>
+                  </button>
+                )}
+                <span className="font-medium">
+                  {moneyExact(c.amount)} · {pct(c.pct)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">Top merchants</h2>
+          <p className="mb-4 text-sm text-[var(--muted)]">
+            Click through to every purchase at that place
+          </p>
+          <ul className="space-y-2">
+            {data.topMerchants.map((m) => (
+              <li
+                key={m.merchant}
+                className="flex items-center justify-between rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
+              >
+                <div>
+                  {readOnly ? (
+                    <div className="font-medium text-[var(--ink)]">
+                      {m.merchant}
+                      {m.recurring && (
+                        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                          Recurring
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <Link
+                      href={`/transactions?merchant=${encodeURIComponent(m.merchant)}&${periodQs}`}
+                      className="font-medium text-[var(--ink)] hover:underline"
+                    >
+                      {m.merchant}
+                      {m.recurring && (
+                        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                          Recurring
+                        </span>
+                      )}
+                    </Link>
+                  )}
+                  <div className="text-xs text-[var(--muted)]">
+                    {m.count} purchase{m.count === 1 ? "" : "s"}
+                    {m.category ? ` · ${m.category}` : ""}
+                  </div>
+                </div>
+                <div className="font-medium">{moneyExact(m.amount)}</div>
+              </li>
+            ))}
+            {data.topMerchants.length === 0 && (
+              <p className="text-sm text-[var(--muted)]">No spend in this period yet.</p>
+            )}
+          </ul>
+        </section>
+      </div>
+
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
-        <h2 className="font-display text-xl text-[var(--ink)]">Month comparison</h2>
+        <h2 className="font-display text-xl text-[var(--ink)]">Period comparison</h2>
         <p className="mb-4 text-sm text-[var(--muted)]">
-          This month vs last month vs usual ({money(data.baseline)} baseline)
+          This period vs prior window vs usual monthly ({money(data.baseline)} baseline)
         </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[520px] text-left text-sm">
             <thead className="text-[var(--muted)]">
               <tr>
                 <th className="pb-2 font-medium">Category</th>
-                <th className="pb-2 font-medium">This month</th>
-                <th className="pb-2 font-medium">Last month</th>
+                <th className="pb-2 font-medium">This period</th>
+                <th className="pb-2 font-medium">Prior period</th>
                 <th className="pb-2 font-medium">Usual</th>
               </tr>
             </thead>
@@ -271,11 +469,12 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* Habits */}
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
           <h2 className="font-display text-xl text-[var(--ink)]">Spending rules</h2>
-          <p className="mb-4 text-sm text-[var(--muted)]">On track or over — from real transactions</p>
+          <p className="mb-4 text-sm text-[var(--muted)]">
+            On track or over — from purchases in this period
+          </p>
           <ul className="space-y-2">
             {data.ruleStatus.map((r) => (
               <li
@@ -301,11 +500,6 @@ export function DashboardView({
                 <p className="mt-1 text-[var(--muted)]">{r.detail}</p>
               </li>
             ))}
-            {data.ruleStatus.length === 0 && (
-              <p className="text-sm text-[var(--muted)]">
-                {readOnly ? "No rules set." : "Add rules in Settings."}
-              </p>
-            )}
           </ul>
         </section>
 
@@ -331,7 +525,11 @@ export function DashboardView({
                     onChange={() => toggleWeekly(field)}
                     className="h-4 w-4 accent-[var(--accent)]"
                   />
-                  <span className={weekly[field] ? "text-[var(--muted)] line-through" : "text-[var(--ink)]"}>
+                  <span
+                    className={
+                      weekly[field] ? "text-[var(--muted)] line-through" : "text-[var(--ink)]"
+                    }
+                  >
                     {label}
                   </span>
                 </label>
