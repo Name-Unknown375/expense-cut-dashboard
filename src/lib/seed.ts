@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { DEFAULT_CATEGORIES } from "./categories";
+import { resolveCategoryId, rememberMerchant } from "./autocat";
 import { subMonths, setDate, startOfMonth } from "date-fns";
 
 let seeding: Promise<void> | null = null;
@@ -22,6 +23,9 @@ export async function ensureSeeded() {
     if (txCount === 0) {
       await seedSampleTransactions();
     }
+
+    // Backfill any leftover null categories (never leave spend unlabeled)
+    await backfillUncategorized();
 
     const ruleCount = await prisma.spendingRule.count();
     if (ruleCount === 0) {
@@ -53,6 +57,36 @@ export async function ensureSeeded() {
     await seeding;
   } finally {
     seeding = null;
+  }
+}
+
+/** Assign categories to any transactions still missing one. */
+export async function backfillUncategorized() {
+  const uncategorized = await prisma.transaction.findMany({
+    where: { categoryId: null },
+    select: { id: true, merchant: true },
+    take: 500,
+  });
+  if (uncategorized.length === 0) return;
+
+  const [merchantRules, categories] = await Promise.all([
+    prisma.merchantRule.findMany(),
+    prisma.category.findMany(),
+  ]);
+  const ruleMap = new Map(merchantRules.map((r) => [r.merchant, r.categoryId]));
+  const catByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
+
+  for (const tx of uncategorized) {
+    const resolved = resolveCategoryId(tx.merchant, { ruleMap, catByName });
+    if (!resolved.categoryId) continue;
+    await prisma.transaction.update({
+      where: { id: tx.id },
+      data: { categoryId: resolved.categoryId },
+    });
+    if (resolved.source === "heuristic" || resolved.source === "other") {
+      await rememberMerchant(prisma, tx.merchant, resolved.categoryId);
+      ruleMap.set(tx.merchant.trim().toLowerCase(), resolved.categoryId);
+    }
   }
 }
 
