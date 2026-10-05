@@ -28,6 +28,12 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "gas company",
       "utility",
       "water bill",
+      "bc hydro",
+      "shaw",
+      "telus",
+      "rogers",
+      "fido",
+      "koodo",
       "comcast",
       "xfinity",
       "verizon fios",
@@ -75,11 +81,18 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "safeway",
       "kroger",
       "aldi",
-      "walmart",
       "grocery",
       "supermarket",
+      "superstore",
+      "save on foods",
+      "thrifty foods",
+      "buy low foods",
+      "freshco",
+      "fresh st",
+      "t&t",
+      "7-eleven",
+      "7 eleven",
       "market",
-      "fresh",
       "foods",
       "sobeys",
       "loblaws",
@@ -96,9 +109,20 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "mobil",
       "gas station",
       "petrol",
-      "uber",
+      "uber trip",
+      "ubertrip",
       "lyft",
-      "metro",
+      "translink",
+      "compass card",
+      "costco gas",
+      "petro-canada",
+      "petro canada",
+      "esso",
+      "husky",
+      "u-haul",
+      "uhaul",
+      "insurance corporation of bc",
+      "bcaa",
       "transit",
       "parking",
       "toll",
@@ -124,8 +148,22 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "doctor",
       "medical",
       "optomet",
+      "vision source",
       "lenscrafters",
       "goodrx",
+      "naturopath",
+      "osteopath",
+      "concussion",
+      "nutrition",
+      "rmt",
+      "tcm",
+      "physio",
+      "chiro",
+      "yoga",
+      "shoppers drug",
+      "drug mart",
+      "london drugs",
+      "dr.",
     ],
   },
   {
@@ -140,7 +178,11 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "pizza",
       "domino",
       "uber eats",
+      "ubereats",
       "doordash",
+      "ramen",
+      "pho",
+      "donair",
       "grubhub",
       "skipthedishes",
       "restaur",
@@ -165,6 +207,14 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
     category: "Shopping",
     keywords: [
       "amazon",
+      "amazon.ca",
+      "amzn",
+      "walmart",
+      "wal-mart",
+      "marshalls",
+      "homesense",
+      "winners",
+      "dollarama",
       "target",
       "best buy",
       "nike",
@@ -181,7 +231,6 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "sephora",
       "ulta",
       "nordstrom",
-      "gap ",
       "old navy",
     ],
   },
@@ -223,29 +272,54 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
   },
 ];
 
-/** Account-to-account moves, card payments, and cash withdrawals — not purchases. */
+/** Account-to-account moves, card payments, cash withdrawals, and personal e-transfers. */
 export function isInternalMovement(merchant: string): boolean {
   const m = merchant.toLowerCase().replace(/\s+/g, " ");
+  if (/wealth realty|osteopath|physio|naturopath|dental|chiro|massage/.test(m)) return false;
   return (
     /internet banking internet transfer/.test(m) ||
+    /internet banking e-transfer/.test(m) ||
     /to card /.test(m) ||
     /to account /.test(m) ||
     /cash advance/.test(m) ||
-    /branch transaction withdrawal/.test(m)
+    /atm withdrawal/.test(m) ||
+    /branch transaction withdrawal/.test(m) ||
+    /cibc loans/.test(m)
   );
+}
+
+function matchesKeyword(merchant: string, keyword: string): boolean {
+  let from = 0;
+  while (from < merchant.length) {
+    const idx = merchant.indexOf(keyword, from);
+    if (idx < 0) return false;
+    const before = idx === 0 ? " " : merchant[idx - 1];
+    const afterIdx = idx + keyword.length;
+    const after = afterIdx >= merchant.length ? " " : merchant[afterIdx];
+    const boundary = (ch: string) => !/[a-z0-9]/.test(ch);
+    if (boundary(before) && boundary(after)) return true;
+    from = idx + 1;
+  }
+  return false;
 }
 
 export function guessCategoryName(merchant: string): string | null {
   const m = merchant.toLowerCase().replace(/\s+/g, " ").trim();
   if (!m) return null;
+  if (/wealth realty/.test(m)) return "Rent";
+  if (/osteopath|naturopath/.test(m)) return "Health";
   if (isInternalMovement(m)) return "Transfers";
 
+  let best: { keyword: string; category: string } | null = null;
   for (const rule of KEYWORD_MAP) {
     for (const kw of rule.keywords) {
-      if (m.includes(kw)) return rule.category;
+      if (!matchesKeyword(m, kw)) continue;
+      if (!best || kw.length > best.keyword.length) {
+        best = { keyword: kw, category: rule.category };
+      }
     }
   }
-  return null;
+  return best?.category ?? null;
 }
 
 export function resolveCategoryId(
@@ -269,7 +343,7 @@ export function resolveCategoryId(
   // Partial memory match (e.g. "STARBUCKS #1234" vs "starbucks")
   const m = merchant.trim().toLowerCase();
   for (const [key, id] of Array.from(ruleMap.entries())) {
-    if (key.length >= 4 && (m.includes(key) || key.includes(m))) {
+    if (key.length >= 8 && m.includes(key)) {
       return { categoryId: id, source: "memory" };
     }
   }
