@@ -19,14 +19,69 @@ jobs:
           node-version: "20"
       - name: Generate lockfile
         run: npm install --package-lock-only --ignore-scripts
-      - name: Commit lockfile
+      - name: Commit lockfile via Contents API
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
-          if git diff --staged --quiet; then
-            echo "No changes"
-          else
-            git commit -m "Add package-lock.json for reproducible installs"
-            git push
-          fi
+          python3 <<'PY'
+          import base64, json, os, urllib.error, urllib.request
+
+          def api(url, method="GET", body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  url,
+                  data=data,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req) as resp:
+                      return json.load(resp)
+              except urllib.error.HTTPError as e:
+                  err = e.read().decode()
+                  raise SystemExit(f"HTTP {e.code}: {err}")
+
+          repo = os.environ["REPO"]
+          branch = os.environ["BRANCH"]
+          content = open("package-lock.json", "rb").read()
+          print("local_size", len(content))
+          assert content.startswith(b"{"), content[:40]
+
+          sha = None
+          meta_url = f"https://api.github.com/repos/{repo}/contents/package-lock.json?ref={branch}"
+          req = urllib.request.Request(
+              meta_url,
+              headers={
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  sha = json.load(resp).get("sha")
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise SystemExit(f"HTTP {e.code}: {e.read().decode()}")
+
+          body = {
+              "message": "Add package-lock.json for reproducible installs",
+              "content": base64.b64encode(content).decode(),
+              "branch": branch,
+          }
+          if sha:
+              body["sha"] = sha
+          result = api(
+              f"https://api.github.com/repos/{repo}/contents/package-lock.json",
+              method="PUT",
+              body=body,
+          )
+          print("SUCCESS", result["content"]["size"], result["content"]["sha"], result["commit"]["sha"])
+          PY
