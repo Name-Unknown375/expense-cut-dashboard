@@ -17,7 +17,7 @@ import { money, moneyExact, pct } from "@/lib/categories";
 import type { DashboardData } from "@/lib/analytics";
 import type { Verdict } from "@/lib/insights";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PeriodFilter } from "./PeriodFilter";
 import { AiInsightPanel } from "./AiInsightPanel";
 
@@ -42,11 +42,30 @@ export function DashboardView({
 }) {
   const router = useRouter();
   const [weekly, setWeekly] = useState(data.weekly);
+  const [nextAction, setNextAction] = useState(data.disposition.nextAction);
   const overTarget = data.spentThisPeriod > data.target;
   const periodQs = new URLSearchParams(data.period.query).toString();
   const showMonthTrend = (data.byMonth?.length ?? 0) > 1;
   const showDay = (data.byDay?.length ?? 0) > 1;
   const showWeek = (data.byWeek?.length ?? 0) > 1 && !showDay;
+
+  useEffect(() => {
+    setNextAction(data.disposition.nextAction);
+    let cancelled = false;
+    fetch(`/api/ai-insights?${periodQs}`)
+      .then((r) => r.json())
+      .then((body) => {
+        const line = body?.insight?.nextAction;
+        if (cancelled || typeof line !== "string") return;
+        if (/\$\s?\d/.test(line) && !/import more|tighten one want/i.test(line)) {
+          setNextAction(line);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [periodQs, data.disposition.nextAction]);
 
   function openCategory(categoryId: string) {
     if (readOnly) return;
@@ -135,7 +154,7 @@ export function DashboardView({
         </div>
         <div className="relative mt-5 rounded-xl bg-white/10 px-4 py-3">
           <p className="text-xs uppercase tracking-wide text-white/50">Do this next</p>
-          <p className="mt-1 text-lg">{data.disposition.nextAction}</p>
+          <p className="mt-1 text-lg">{nextAction}</p>
         </div>
         <div className="relative mt-4 h-3 overflow-hidden rounded-full bg-white/15">
           <div
