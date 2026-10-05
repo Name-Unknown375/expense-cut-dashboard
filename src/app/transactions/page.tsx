@@ -5,6 +5,7 @@ import { moneyExact } from "@/lib/categories";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import Link from "next/link";
 
 type Category = { id: string; name: string; bucket: string };
 type Tx = {
@@ -21,8 +22,13 @@ function TransactionsInner() {
   const params = useSearchParams();
   const [transactions, setTransactions] = useState<Tx[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [period] = useState(params.get("period") ?? "");
   const [month, setMonth] = useState(params.get("month") ?? "");
+  const [year] = useState(params.get("year") ?? "");
+  const [from, setFrom] = useState(params.get("from") ?? "");
+  const [to, setTo] = useState(params.get("to") ?? "");
   const [categoryId, setCategoryId] = useState(params.get("categoryId") ?? "");
+  const [merchant, setMerchant] = useState(params.get("merchant") ?? "");
   const [q, setQ] = useState("");
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
@@ -34,8 +40,13 @@ function TransactionsInner() {
 
   async function load() {
     const qs = new URLSearchParams();
+    if (period) qs.set("period", period);
     if (month) qs.set("month", month);
+    if (year) qs.set("year", year);
+    if (from) qs.set("from", from);
+    if (to) qs.set("to", to);
     if (categoryId) qs.set("categoryId", categoryId);
+    if (merchant) qs.set("merchant", merchant);
     if (q) qs.set("q", q);
     const [txRes, catRes] = await Promise.all([
       fetch(`/api/transactions?${qs}`),
@@ -50,7 +61,7 @@ function TransactionsInner() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, categoryId]);
+  }, [month, categoryId, merchant, from, to, period, year]);
 
   async function addTx(e: React.FormEvent) {
     e.preventDefault();
@@ -69,11 +80,11 @@ function TransactionsInner() {
     await load();
   }
 
-  async function updateCategory(id: string, categoryId: string) {
+  async function updateCategory(id: string, next: string) {
     await fetch(`/api/transactions/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ categoryId: categoryId || null }),
+      body: JSON.stringify({ categoryId: next || null }),
     });
     await load();
   }
@@ -84,10 +95,28 @@ function TransactionsInner() {
     await load();
   }
 
+  const dashQs = new URLSearchParams();
+  if (period) dashQs.set("period", period);
+  if (month) dashQs.set("month", month);
+  if (year) dashQs.set("year", year);
+  if (from) dashQs.set("from", from);
+  if (to) dashQs.set("to", to);
+
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
-      <h1 className="font-display text-3xl text-[var(--ink)]">Transactions</h1>
-      <p className="mt-1 text-[var(--muted)]">Add cash, fix categories, filter by month.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl text-[var(--ink)]">Transactions</h1>
+          <p className="mt-1 text-[var(--muted)]">
+            {merchant ? `Purchases at ${merchant}` : "Add cash, fix categories, filter by period."}
+          </p>
+        </div>
+        {(categoryId || merchant) && (
+          <Link href={`/?${dashQs}`} className="text-sm text-[var(--accent)] underline">
+            ← Back to dashboard
+          </Link>
+        )}
+      </div>
 
       <form
         onSubmit={addTx}
@@ -144,14 +173,6 @@ function TransactionsInner() {
             Add
           </button>
         </div>
-        <label className="text-sm sm:col-span-2 lg:col-span-6">
-          Note (optional)
-          <input
-            value={form.note}
-            onChange={(e) => setForm({ ...form, note: e.target.value })}
-            className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-1.5"
-          />
-        </label>
       </form>
 
       <div className="mt-6 flex flex-wrap gap-3">
@@ -160,6 +181,20 @@ function TransactionsInner() {
           value={month}
           onChange={(e) => setMonth(e.target.value)}
           className="rounded-md border border-[var(--line)] px-2 py-1.5 text-sm"
+        />
+        <input
+          type="date"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          className="rounded-md border border-[var(--line)] px-2 py-1.5 text-sm"
+          title="From"
+        />
+        <input
+          type="date"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          className="rounded-md border border-[var(--line)] px-2 py-1.5 text-sm"
+          title="To"
         />
         <select
           value={categoryId}
@@ -175,7 +210,13 @@ function TransactionsInner() {
           ))}
         </select>
         <input
-          placeholder="Search merchant"
+          placeholder="Merchant"
+          value={merchant}
+          onChange={(e) => setMerchant(e.target.value)}
+          className="rounded-md border border-[var(--line)] px-2 py-1.5 text-sm"
+        />
+        <input
+          placeholder="Search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && load()}
@@ -191,7 +232,10 @@ function TransactionsInner() {
 
       <ul className="mt-4 divide-y divide-[var(--line)] rounded-2xl border border-[var(--line)] bg-[var(--surface)]">
         {transactions.map((t) => (
-          <li key={t.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+          <li
+            key={t.id}
+            className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
+          >
             <div>
               <div className="font-medium text-[var(--ink)]">{t.merchant}</div>
               <div className="text-xs text-[var(--muted)]">
