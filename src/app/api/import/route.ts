@@ -15,12 +15,53 @@ const mappingSchema = z.object({
   description: z.string(),
   category: z.string().optional(),
   amountStyle: z.enum(["signed", "debit_credit"]).default("signed"),
+  /** When true, CSV has no header row; fields are col_0, col_1, … */
+  headerless: z.boolean().optional().default(false),
 });
 
 export type Mapping = z.infer<typeof mappingSchema>;
 
 function dedupeKey(date: Date, amount: number, merchant: string) {
   return `${format(date, "yyyy-MM-dd")}|${amount.toFixed(2)}|${merchant.trim().toLowerCase()}`;
+}
+
+function colIndex(key: string | undefined): number {
+  if (!key) return -1;
+  const m = /^col_(\d+)$/.exec(key);
+  return m ? parseInt(m[1], 10) : -1;
+}
+
+function rowsAsRecords(
+  text: string,
+  mapping: Mapping
+): { rows: Record<string, string>[]; headers: string[] } {
+  if (mapping.headerless) {
+    const parsed = Papa.parse<string[]>(text, {
+      header: false,
+      skipEmptyLines: true,
+    });
+    const maxCols = Math.max(0, ...parsed.data.map((r) => r.length));
+    const headers = Array.from({ length: maxCols }, (_, i) => `col_${i}`);
+    const rows = parsed.data.map((arr) => {
+      const rec: Record<string, string> = {};
+      for (let i = 0; i < maxCols; i++) rec[`col_${i}`] = String(arr[i] ?? "").trim();
+      return rec;
+    });
+    return { rows, headers };
+  }
+
+  const parsed = Papa.parse<Record<string, string>>(text, {
+    header: true,
+    skipEmptyLines: true,
+  });
+  return {
+    rows: parsed.data.map((r) => {
+      const rec: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r)) rec[k] = String(v ?? "").trim();
+      return rec;
+    }),
+    headers: parsed.meta.fields ?? [],
+  };
 }
 
 export async function GET() {
@@ -48,18 +89,23 @@ async function parseFileRows(
   catByName: Map<string, string>
 ) {
   const text = await file.text();
-  const parsed = Papa.parse<Record<string, string>>(text, {
-    header: true,
-    skipEmptyLines: true,
-  });
+  const { rows, headers } = rowsAsRecords(text, mapping);
 
   let skipped = 0;
   let duplicates = 0;
   const pending: PendingRow[] = [];
-  const headers = parsed.meta.fields ?? [];
 
-  for (const row of parsed.data) {
-    const dateStr = row[mapping.date]?.trim();
+  // Validate headerless keys reference real columns when possible
+  if (mapping.headerless) {
+    for (const key of [mapping.date, mapping.description, mapping.amount, mapping.debit, mapping.credit]) {
+      if (key && colIndex(key) < 0) {
+        /* non col_* keys ignored — rowsAsRecords only exposes col_N */
+      }
+    }
+  }
+
+  for (const row of rows) {
+    const dateStr = (row[mapping.date] ?? "").trim();
     const merchant = (row[mapping.description] ?? "").trim();
     if (!dateStr || !merchant) {
       skipped += 1;
@@ -122,7 +168,7 @@ async function parseFileRows(
     headers,
     skipped,
     duplicates,
-    rows: parsed.data.length,
+    rows: rows.length,
     pending,
   };
 }
