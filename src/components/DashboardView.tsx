@@ -17,7 +17,7 @@ import { money, moneyExact, pct } from "@/lib/categories";
 import type { DashboardData } from "@/lib/analytics";
 import type { Verdict } from "@/lib/insights";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { PeriodFilter } from "./PeriodFilter";
 import { AiInsightPanel } from "./AiInsightPanel";
 
@@ -43,30 +43,10 @@ export function DashboardView({
 }) {
   const router = useRouter();
   const [weekly, setWeekly] = useState(data.weekly);
-  const [nextAction, setNextAction] = useState(data.disposition.nextAction);
-  const overTarget = data.spentThisPeriod > data.target;
   const periodQs = new URLSearchParams(data.period.query).toString();
   const showMonthTrend = (data.byMonth?.length ?? 0) > 1;
   const showDay = (data.byDay?.length ?? 0) > 1;
   const showWeek = (data.byWeek?.length ?? 0) > 1 && !showDay;
-
-  useEffect(() => {
-    setNextAction(data.disposition.nextAction);
-    let cancelled = false;
-    fetch(`/api/ai-insights?${periodQs}`)
-      .then((r) => r.json())
-      .then((body) => {
-        const line = body?.insight?.nextAction;
-        if (cancelled || typeof line !== "string") return;
-        if (/\$\s?\d/.test(line) && !/import more|tighten one want/i.test(line)) {
-          setNextAction(line);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [periodQs, data.disposition.nextAction]);
 
   function openCategory(categoryId: string) {
     if (readOnly) return;
@@ -89,18 +69,6 @@ export function DashboardView({
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8">
-      <div>
-        <p className="text-sm uppercase tracking-[0.14em] text-[var(--accent)]">
-          {data.period.label}
-        </p>
-        <h1 className="font-display text-3xl text-[var(--ink)] sm:text-4xl">
-          Cut waste. Hit your target.
-        </h1>
-        <p className="mt-1 max-w-xl text-[var(--muted)]">
-          Verdicts first — then the charts. Every line should answer what to do next.
-        </p>
-      </div>
-
       {!readOnly && (
         <PeriodFilter
           initial={{
@@ -113,85 +81,49 @@ export function DashboardView({
         />
       )}
 
-      {/* Hero */}
-      <section className="relative overflow-hidden rounded-2xl bg-[var(--ink)] px-6 py-7 text-white shadow-lg">
-        <div className="pointer-events-none absolute -right-10 -top-10 h-48 w-48 rounded-full bg-[var(--accent)]/30 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-16 left-20 h-40 w-40 rounded-full bg-emerald-400/20 blur-3xl" />
-        <div className="relative grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <HeroStat
-            label="Usual monthly spend"
-            value={money(data.baseline)}
-            hint={data.rentDoubled ? "One rent payment per month" : "Avg of recent months"}
-          />
-          <HeroStat
-            label="Target (50%)"
-            value={money(data.target)}
-            hint={
-              data.period.mode === "month"
-                ? "Half of usual"
-                : "Half of usual, scaled to this period"
-            }
-          />
-          <HeroStat
-            label="Spent in this period"
-            value={money(data.spentThisPeriod)}
-            hint={
-              data.spendOfIncome != null
-                ? `${pct(data.targetUsedPct)} of target · ${pct(data.spendOfIncome)} of income`
-                : `${pct(data.targetUsedPct)} of target`
-            }
-            warn={overTarget}
-          />
-          <HeroStat
-            label={data.period.mode === "month" ? "Still can spend" : "vs prior period"}
-            value={
-              data.period.mode === "month"
-                ? money(data.remaining)
-                : money(data.spentThisPeriod - data.spentPrevPeriod)
-            }
-            hint={
-              data.period.mode === "month"
-                ? `Projected period-end ${money(data.projected)}`
-                : `Prior window ${money(data.spentPrevPeriod)}`
-            }
-            warn={
-              data.period.mode === "month"
-                ? data.projected > data.target
-                : data.spentThisPeriod > data.spentPrevPeriod
-            }
-          />
-        </div>
-        <div className="relative mt-5 rounded-xl bg-white/10 px-4 py-3">
-          <p className="text-xs uppercase tracking-wide text-white/50">Do this next</p>
-          <p className="mt-1 text-lg">{nextAction}</p>
-          <p className="mt-2 text-sm text-white/80">
-            Spent {money(data.opening.spent)}. About {money(data.opening.locked)} is rent once plus
-            big one-offs. Card taps you can shrink: {money(data.opening.shrinkable)}
-            {data.opening.eTransfer > 0
-              ? `, plus ${money(data.opening.eTransfer)} to ${data.opening.eTransferName ?? "a named e-transfer"} that may be optional`
-              : ""}
-            .
-            {(data.opening.paidCard > 0 || data.opening.movedAccount > 0) && (
-              <>
-                {" "}
-                Not spending: {money(data.opening.paidCard)} paid the card
-                {data.opening.movedAccount > 0
-                  ? ` and ${money(data.opening.movedAccount)} moved to another account`
-                  : ""}
-                .
-              </>
-            )}
-          </p>
-          {data.pastYou && <p className="mt-1 text-sm text-white/70">{data.pastYou}</p>}
-        </div>
-        <div className="relative mt-4 h-3 overflow-hidden rounded-full bg-white/15">
-          <div
-            className={`h-full rounded-full transition-all ${
-              overTarget ? "bg-rose-400" : "bg-emerald-400"
-            }`}
-            style={{ width: `${Math.min(100, data.targetUsedPct)}%` }}
-          />
-        </div>
+      <div data-brief>
+        <section className="relative overflow-hidden rounded-2xl bg-[var(--ink)] px-6 py-7 text-white shadow-lg">
+          <div className="pointer-events-none absolute -right-10 -top-10 h-48 w-48 rounded-full bg-[var(--accent)]/30 blur-3xl" />
+          <p className="relative text-sm uppercase tracking-[0.14em] text-white/50">{data.period.label}</p>
+          <h1 className="relative mt-2 max-w-3xl font-display text-2xl leading-snug sm:text-3xl">
+            {data.brief.lead}
+          </h1>
+          {data.brief.notSpending && (
+            <p className="relative mt-4 max-w-3xl text-base text-white/85">{data.brief.notSpending}</p>
+          )}
+          {data.brief.habits.length > 0 && (
+            <div className="relative mt-5 max-w-3xl space-y-2 text-sm leading-relaxed text-white/80">
+              {data.brief.habits.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          )}
+          <p className="relative mt-5 max-w-3xl text-sm leading-relaxed text-white/75">{data.brief.taps}</p>
+        </section>
+        {data.caps.length > 0 && (
+          <div className="mt-8">
+            <CapsHold spent={data.spentThisPeriod} rows={data.caps} />
+          </div>
+        )}
+      </div>
+
+      <section data-pace className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+        <h2 className="font-display text-xl text-[var(--ink)]">Pace of the taps</h2>
+        <p className="mb-3 text-sm text-[var(--muted)]">{data.pace.note}</p>
+        {data.pace.showChart && (
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data.pace.points}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="variable" name="Card taps" stroke="#0f766e" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="ideal" name="50% target" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </section>
 
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm">
@@ -237,27 +169,6 @@ export function DashboardView({
           Deposits and e-transfers in are not in this total.
         </p>
       </section>
-
-      {data.pace.length > 1 && (
-        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
-          <h2 className="font-display text-xl text-[var(--ink)]">Pace to the 50% target</h2>
-          <p className="mb-3 text-sm text-[var(--muted)]">
-            Solid line is discretionary spend. Dotted line is the ideal path. Fixed bills ({money(data.fixedSpent)}) stay off this line so rent does not fake a spike.
-          </p>
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data.pace}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Line type="monotone" dataKey="variable" name="Discretionary" stroke="#0f766e" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="ideal" name="Ideal pace" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-      )}
 
       {(data.capWarnings.length > 0 || data.watchlists.length > 0) && (
         <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
@@ -442,10 +353,6 @@ export function DashboardView({
           )}
         </div>
       </section>
-
-      {data.caps.length > 0 && (
-        <CapsHold spent={data.spentThisPeriod} rows={data.caps} />
-      )}
 
       {/* Trend charts — polish */}
       {(showMonthTrend || showDay || showWeek) && (
@@ -797,22 +704,3 @@ function WatchlistForm() {
   );
 }
 
-function HeroStat({
-  label,
-  value,
-  hint,
-  warn,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  warn?: boolean;
-}) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-white/60">{label}</p>
-      <p className={`font-display text-3xl ${warn ? "text-rose-300" : "text-white"}`}>{value}</p>
-      <p className="text-xs text-white/60">{hint}</p>
-    </div>
-  );
-}
