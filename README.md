@@ -33,8 +33,12 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with `APP_PASSWO
 | `TURSO_AUTH_TOKEN` | Netlify | Turso auth token |
 | `APP_PASSWORD` | Yes | Owner login password |
 | `SESSION_SECRET` | Yes | Signs session cookies |
+| `GEMINI_API_KEY` | Optional | Google AI Studio key — auto-categorizes unknown merchants + deeper dashboard insights |
+| `GEMINI_MODEL` | Optional | Defaults to `gemini-3.5-flash-lite` |
 
 When `TURSO_DATABASE_URL` is set, the app uses Turso. Otherwise it uses the local `DATABASE_URL` SQLite file.
+
+Categories are assigned automatically on import (merchant memory → keyword heuristics → Gemini → Other). You do not need to hand-label spend.
 
 ## Deploy on Netlify
 
@@ -45,6 +49,7 @@ When `TURSO_DATABASE_URL` is set, the app uses Turso. Otherwise it uses the loca
    - `TURSO_AUTH_TOKEN`
    - `APP_PASSWORD`
    - `SESSION_SECRET` (long random string)
+   - `GEMINI_API_KEY` (Google AI Studio) for auto-categorize + deeper insights
    - `DATABASE_URL` can mirror the Turso URL or stay unused when Turso vars are present
 4. Deploy. `netlify.toml` runs `prisma generate`, `prisma db push`, and `next build`, and enables `@netlify/plugin-nextjs`.
 5. Open the site and sign in with `APP_PASSWORD`.
@@ -54,7 +59,7 @@ Data persists across deploys because it lives in Turso, not on the Netlify files
 ## Routes
 
 | Path | Purpose |
-|---|---|
+|---|---|---|
 | `/` | Dashboard (usual spend, 50% target, pace, categories, waste list) |
 | `/import` | CSV upload + column mapping + review |
 | `/transactions` | List, filter, manual add/edit |
