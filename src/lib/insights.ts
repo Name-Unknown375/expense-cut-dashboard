@@ -1,4 +1,5 @@
 import { format } from "date-fns";
+import { money } from "./categories";
 
 export type Verdict =
   | "Fixed"
@@ -365,7 +366,21 @@ export type OpeningSplit = {
   eTransferName: string | null;
   paidCard: number;
   movedAccount: number;
+  lockedItems: Array<{ name: string; amount: number }>;
 };
+
+export type Brief = {
+  lead: string;
+  notSpending: string | null;
+  habits: string[];
+  taps: string;
+};
+
+function listJoin(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
 
 export type CapRow = { id: string; label: string; actual: number; cap: number };
 
@@ -429,17 +444,19 @@ export function buildOpening(spend: Tx[], transfers: Tx[]): OpeningSplit {
   const rentCount = rent.reduce((n, g) => n + g.count, 0);
   const rentTotal = sum(rent.map((g) => g.amount));
   const rentOnce = rentCount > 1 ? rentTotal / Math.max(1, rentCount) : rentTotal;
-  const oneOffs = sum(
-    groups
-      .filter(
-        (g) =>
-          g.count === 1 &&
-          g.amount >= 200 &&
-          g.categoryName !== "Rent" &&
-          !/wealth realty/i.test(g.merchant)
-      )
-      .map((g) => g.amount)
-  );
+  const oneOffGroups = groups
+    .filter(
+      (g) =>
+        g.count === 1 &&
+        g.amount >= 200 &&
+        g.categoryName !== "Rent" &&
+        !/wealth realty/i.test(g.merchant)
+    )
+    .sort((a, b) => b.amount - a.amount);
+  const oneOffs = sum(oneOffGroups.map((g) => g.amount));
+  const lockedItems: Array<{ name: string; amount: number }> = [];
+  if (rentOnce > 0) lockedItems.push({ name: "rent once", amount: rentOnce });
+  for (const g of oneOffGroups) lockedItems.push({ name: g.merchant, amount: g.amount });
   const eGroups = groupByMerchant(
     transfers.filter(
       (t) =>
@@ -467,7 +484,46 @@ export function buildOpening(spend: Tx[], transfers: Tx[]): OpeningSplit {
     eTransferName: eGroups[0]?.merchant ?? null,
     paidCard,
     movedAccount,
+    lockedItems,
   };
+}
+
+export function buildBrief(opening: OpeningSplit, storyLines: StoryLine[], taps: {
+  intro: string;
+  lines: TapLine[];
+}): Brief {
+  const locked = opening.lockedItems.map((item) => `${item.name} (${money(item.amount)})`);
+  const cannot =
+    locked.length > 0 ? `${money(opening.locked)} cannot be cut: ${listJoin(locked)}. ` : "";
+  const extra =
+    opening.eTransfer > 0
+      ? `, plus ${money(opening.eTransfer)} to ${opening.eTransferName ?? "a named e-transfer"} that may be optional`
+      : "";
+  const lead = `You spent ${money(opening.spent)}. ${cannot}Card taps you can shrink: ${money(opening.shrinkable)}${extra}.`;
+  let notSpending: string | null = null;
+  if (opening.paidCard > 0 || opening.movedAccount > 0) {
+    const bits: string[] = [];
+    if (opening.paidCard > 0) bits.push(`${money(opening.paidCard)} paid the card`);
+    if (opening.movedAccount > 0) bits.push(`${money(opening.movedAccount)} moved to another account`);
+    notSpending = `Not spending: ${listJoin(bits)}.`;
+  }
+  const habits = storyLines
+    .filter(
+      (line) =>
+        line.verdict === "Main leak" ||
+        line.verdict === "Cap it" ||
+        line.verdict === "Pick one" ||
+        line.verdict === "Skip next month" ||
+        /tiny taps|food court/i.test(line.what)
+    )
+    .slice(0, 8)
+    .map((line) => `${line.what}: ${money(line.amount)}. ${line.sentence}`);
+  const hits = taps.lines
+    .slice(0, 8)
+    .map((line) => `${line.merchant} (${line.phrase}, ${money(line.amount)})`);
+  const intro = taps.intro.replace(/\s*The hits that add up:\s*$/, "");
+  const tapsLine = hits.length > 0 ? `${intro} The ones that add up: ${listJoin(hits)}.` : intro;
+  return { lead, notSpending, habits, taps: tapsLine };
 }
 
 export function buildCaps(spend: Tx[], transfers: Tx[]): CapRow[] {
@@ -595,7 +651,7 @@ export function buildPeriodStory(
   const tinyCount = tiny.reduce((n, g) => n + g.count, 0);
   if (tinyTotal > 0) {
     lines.push({
-      what: `Food court, vending, and other tiny taps, ${tinyCount} taps`,
+      what: `Food court, vending, and other tiny taps, ${tinyCount} tap${tinyCount === 1 ? "" : "s"}`,
       amount: tinyTotal,
       verdict: "Watch",
       sentence: "Small taps. Skip the ones you do not want.",
@@ -675,7 +731,14 @@ export function buildTaps(tx: Tx[]): {
   outro: string;
 } {
   const groups = groupByMerchant(tx);
-  const bigOneOffs = groups.filter((g) => g.count === 1 && g.amount >= 200);
+  const bigOneOffs = groups.filter(
+    (g) =>
+      g.count === 1 &&
+      g.amount >= 200 &&
+      g.bucket !== "Fixed" &&
+      g.categoryName !== "Rent" &&
+      !/wealth realty/i.test(g.merchant)
+  );
   const bigIds = new Set(bigOneOffs.map((g) => g.merchant.toLowerCase()));
 
   const taps = groups
@@ -685,7 +748,10 @@ export function buildTaps(tx: Tx[]): {
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 12);
 
-  const counted = tx.filter((t) => !bigIds.has(shortMerchant(t.merchant).toLowerCase()));
+  const counted = tx.filter((t) => {
+    if (/wealth realty/i.test(t.merchant) || /rent/i.test(t.category?.name || "")) return false;
+    return !bigIds.has(shortMerchant(t.merchant).toLowerCase());
+  });
   const days = new Set(counted.map((t) => format(t.date, "yyyy-MM-dd")));
   const small = counted.filter((t) => t.amount < 20).length;
   const phone =
@@ -693,10 +759,9 @@ export function buildTaps(tx: Tx[]): {
       ? " Most of those are under $20. That is the phone-tap pattern."
       : "";
   const total = sum(taps.map((t) => t.amount));
+  const namedOff = [...bigOneOffs].sort((a, b) => b.amount - a.amount).slice(0, 3);
   const excludeNote =
-    bigOneOffs.length > 0
-      ? `, not counting the ${bigOneOffs[0].merchant} order`
-      : "";
+    namedOff.length > 0 ? `, not counting ${listJoin(namedOff.map((g) => g.merchant))}` : "";
 
   const intro = `You used the card on ${days.size} day${days.size === 1 ? "" : "s"}, ${counted.length} time${counted.length === 1 ? "" : "s"}${excludeNote}.${phone} The hits that add up:`;
 
