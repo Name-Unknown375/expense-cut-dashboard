@@ -248,13 +248,14 @@ Return JSON only:
   "headline": "≤8 words",
   "brief": "2-3 sentences on the real leak this period",
   "bullets": ["3 concrete moves, each under 14 words"],
-  "nextAction": "one imperative sentence they can do this week"
+  "nextAction": "one imperative sentence naming a merchant from the list and a dollar amount from this period"
 }`;
 
   const result = await geminiGenerateJson<AiSpendBrief>(prompt, {
     temperature: 0.35,
   });
   if (!result?.headline || !result?.brief || !result?.nextAction) return null;
+  if (!/\$\s?\d/.test(String(result.nextAction))) return null;
   return {
     headline: String(result.headline).slice(0, 80),
     brief: String(result.brief).slice(0, 600),
