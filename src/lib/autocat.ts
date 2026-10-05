@@ -125,6 +125,8 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "bcaa",
       "transit",
       "parking",
+      "paybyphone",
+      "impark",
       "toll",
       "amtrak",
       "greyhound",
@@ -160,6 +162,11 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "physio",
       "chiro",
       "yoga",
+      "lion heart",
+      "fitness",
+      "niahealth",
+      "lifelabs",
+      "well.ca",
       "shoppers drug",
       "drug mart",
       "london drugs",
@@ -183,6 +190,13 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "ramen",
       "pho",
       "donair",
+      "popeyes",
+      "poke",
+      "bubble tea",
+      "tea shop",
+      "mochi",
+      "gelato",
+      "candy",
       "grubhub",
       "skipthedishes",
       "restaur",
@@ -215,6 +229,10 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "homesense",
       "winners",
       "dollarama",
+      "value village",
+      "vivobarefoot",
+      "christmas light",
+      "jetson home",
       "target",
       "best buy",
       "nike",
@@ -251,6 +269,9 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "concert",
       "museum",
       "zoo",
+      "innogames",
+      "billiard",
+      "climbing",
       "spotify",
     ],
   },
@@ -284,7 +305,10 @@ export function isInternalMovement(merchant: string): boolean {
     /cash advance/.test(m) ||
     /atm withdrawal/.test(m) ||
     /branch transaction withdrawal/.test(m) ||
-    /cibc loans/.test(m)
+    /cibc loans/.test(m) ||
+    /service charge/.test(m) ||
+    /purchase interest/.test(m) ||
+    /cash interest/.test(m)
   );
 }
 
