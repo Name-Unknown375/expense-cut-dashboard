@@ -19,10 +19,8 @@ export async function ensureSeeded() {
       update: {},
     });
 
-    const txCount = await prisma.transaction.count();
-    if (txCount === 0) {
-      await seedSampleTransactions();
-    }
+    // Demo transactions are not auto-loaded. They were mixing into real imports
+    // and skewing totals. Use `npm run seed` only on an empty local database.
 
     // Backfill any leftover null categories (never leave spend unlabeled)
     await backfillUncategorized();
@@ -90,7 +88,8 @@ export async function backfillUncategorized() {
   }
 }
 
-async function seedSampleTransactions() {
+/** Optional local demo only. Not called on app boot. */
+export async function seedSampleTransactions() {
   const cats = await prisma.category.findMany();
   const byName = Object.fromEntries(cats.map((c) => [c.name, c.id]));
   const now = new Date();
