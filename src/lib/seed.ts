@@ -12,6 +12,12 @@ export async function ensureSeeded() {
     if (count === 0) {
       await prisma.category.createMany({ data: DEFAULT_CATEGORIES });
     }
+    await prisma.category.upsert({
+      where: { name: "Transfers" },
+      create: { name: "Transfers", bucket: "Transfer", color: "#94a3b8", sortOrder: 12 },
+      update: {},
+    });
+    await reclassifyNonSpend();
 
     await prisma.settings.upsert({
       where: { id: "default" },
@@ -55,6 +61,38 @@ export async function ensureSeeded() {
     await seeding;
   } finally {
     seeding = null;
+  }
+}
+
+/** Move account transfers and rent e-transfers off the wrong categories. */
+async function reclassifyNonSpend() {
+  const [transfers, rent] = await Promise.all([
+    prisma.category.findUnique({ where: { name: "Transfers" } }),
+    prisma.category.findUnique({ where: { name: "Rent" } }),
+  ]);
+  if (transfers) {
+    await prisma.transaction.updateMany({
+      where: {
+        NOT: { categoryId: transfers.id },
+        OR: [
+          { merchant: { contains: "INTERNET TRANSFER" } },
+          { merchant: { contains: "CASH ADVANCE" } },
+          { merchant: { contains: "TO CARD " } },
+          { merchant: { contains: "TO ACCOUNT " } },
+          { merchant: { contains: "BRANCH TRANSACTION WITHDRAWAL" } },
+        ],
+      },
+      data: { categoryId: transfers.id },
+    });
+  }
+  if (rent) {
+    await prisma.transaction.updateMany({
+      where: {
+        merchant: { contains: "Wealth Realty" },
+        NOT: { categoryId: rent.id },
+      },
+      data: { categoryId: rent.id },
+    });
   }
 }
 

@@ -9,7 +9,15 @@ export type CategoryRef = { id: string; name: string };
 const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
   {
     category: "Rent",
-    keywords: ["landlord", "rent", "apartment", "property mgmt", "property management", "lease"],
+    keywords: [
+      "landlord",
+      "rent",
+      "apartment",
+      "property mgmt",
+      "property management",
+      "lease",
+      "wealth realty",
+    ],
   },
   {
     category: "Utilities",
@@ -20,7 +28,6 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
       "gas company",
       "utility",
       "water bill",
-      "internet",
       "comcast",
       "xfinity",
       "verizon fios",
@@ -216,9 +223,22 @@ const KEYWORD_MAP: { keywords: string[]; category: string }[] = [
   },
 ];
 
+/** Account-to-account moves, card payments, and cash withdrawals — not purchases. */
+export function isInternalMovement(merchant: string): boolean {
+  const m = merchant.toLowerCase().replace(/\s+/g, " ");
+  return (
+    /internet banking internet transfer/.test(m) ||
+    /to card /.test(m) ||
+    /to account /.test(m) ||
+    /cash advance/.test(m) ||
+    /branch transaction withdrawal/.test(m)
+  );
+}
+
 export function guessCategoryName(merchant: string): string | null {
   const m = merchant.toLowerCase().replace(/\s+/g, " ").trim();
   if (!m) return null;
+  if (isInternalMovement(m)) return "Transfers";
 
   for (const rule of KEYWORD_MAP) {
     for (const kw of rule.keywords) {
