@@ -32,6 +32,15 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState("");
   const [relabelMsg, setRelabelMsg] = useState("");
   const [ruleQuery, setRuleQuery] = useState("");
+  const [ifThen, setIfThen] = useState<
+    { id: string; text: string; places: string[]; weekdaysOnly: boolean; capLabel: string; seeded?: boolean }[]
+  >([]);
+  const [ifDraft, setIfDraft] = useState({
+    text: "",
+    places: "",
+    weekdaysOnly: true,
+    capLabel: "Eating out",
+  });
   const [memory, setMemory] = useState<
     { id: string; merchant: string; categoryId: string; category: string }[]
   >([]);
@@ -44,6 +53,9 @@ export default function SettingsPage() {
     setCategories(data.categories ?? []);
     setRules(data.rules ?? []);
     setShare(data.share ?? null);
+    const ifRes = await fetch("/api/if-then");
+    const ifData = await ifRes.json();
+    setIfThen(ifData.rules ?? []);
   }
 
   useEffect(() => {
@@ -245,6 +257,90 @@ export default function SettingsPage() {
             )}
             <button type="submit" className="rounded-md bg-[var(--ink)] px-4 py-2 text-sm text-white sm:col-span-2">
               Add rule
+            </button>
+          </form>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl">If-then</h2>
+          <p className="mt-1 text-sm text-[var(--muted)]">
+            A rule in your words, checked against the taps in the period you are looking at.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {ifThen.map((rule) => (
+              <li key={rule.id} className="rounded-lg bg-[var(--wash)] px-3 py-2 text-sm">
+                <p>{rule.text}</p>
+                <p className="mt-1 text-[var(--muted)]">
+                  Places: {rule.places.join(", ")}
+                  {rule.weekdaysOnly ? " · weekdays" : ""} · protects {rule.capLabel}
+                  {rule.seeded ? " · example, because none was written yet" : ""}
+                </p>
+                <button
+                  onClick={async () => {
+                    await fetch(`/api/if-then?id=${encodeURIComponent(rule.id)}`, { method: "DELETE" });
+                    await load();
+                  }}
+                  className="mt-1 text-rose-600"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+            {ifThen.length === 0 && (
+              <li className="text-sm text-[var(--muted)]">Write the rule you already use.</li>
+            )}
+          </ul>
+          <form
+            className="mt-4 grid gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await fetch("/api/if-then", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(ifDraft),
+              });
+              setIfDraft({ text: "", places: "", weekdaysOnly: true, capLabel: "Eating out" });
+              await load();
+            }}
+          >
+            <input
+              required
+              placeholder="If it is a weekday and the place is Uber Eats or ice cream, the answer is no"
+              value={ifDraft.text}
+              onChange={(e) => setIfDraft({ ...ifDraft, text: e.target.value })}
+              className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
+            />
+            <input
+              required
+              placeholder="Places, comma separated"
+              value={ifDraft.places}
+              onChange={(e) => setIfDraft({ ...ifDraft, places: e.target.value })}
+              className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
+            />
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={ifDraft.weekdaysOnly}
+                  onChange={(e) => setIfDraft({ ...ifDraft, weekdaysOnly: e.target.checked })}
+                />
+                Weekdays only
+              </label>
+              <label>
+                Protects
+                <select
+                  value={ifDraft.capLabel}
+                  onChange={(e) => setIfDraft({ ...ifDraft, capLabel: e.target.value })}
+                  className="ml-2 rounded-md border border-[var(--line)] px-2 py-1"
+                >
+                  <option>Eating out</option>
+                  <option>Costco</option>
+                  <option>Gym</option>
+                </select>
+              </label>
+            </div>
+            <button type="submit" className="rounded-md bg-[var(--ink)] px-4 py-2 text-sm text-white">
+              Save if-then
             </button>
           </form>
         </section>
