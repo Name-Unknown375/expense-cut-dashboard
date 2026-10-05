@@ -21,17 +21,17 @@ export const DEFAULT_CATEGORIES: {
 ];
 
 export function money(n: number): string {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("en-CA", {
     style: "currency",
-    currency: "USD",
+    currency: "CAD",
     maximumFractionDigits: 0,
   }).format(n);
 }
 
 export function moneyExact(n: number): string {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("en-CA", {
     style: "currency",
-    currency: "USD",
+    currency: "CAD",
   }).format(n);
 }
 

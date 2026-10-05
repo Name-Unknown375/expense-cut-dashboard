@@ -85,6 +85,7 @@ model Settings {
   baselineOverride  Float?   // optional override for usual monthly spend
   csvColumnMapping  String?  // JSON
   aiCacheJson       String?  // cached Gemini period insight JSON
+  watchlistsJson    String?  // [{id, merchantKey, label, capAmount}]
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }

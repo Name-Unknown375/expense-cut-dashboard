@@ -14,6 +14,7 @@ const verdictStyle: Record<Verdict, string> = {
   Keep: "bg-teal-100 text-teal-900",
   "Skip next month": "bg-fuchsia-100 text-fuchsia-900",
   Watch: "bg-yellow-100 text-yellow-900",
+  "Name this": "bg-violet-100 text-violet-950",
 };
 
 export function CategoryInsightView({

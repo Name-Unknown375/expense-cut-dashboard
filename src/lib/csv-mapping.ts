@@ -1,3 +1,5 @@
+import { merchantKey } from "./insights";
+
 /** Shared CSV mapping helpers for CIBC-style bank exports. */
 
 export type AmountStyle = "signed" | "debit_credit";
@@ -101,12 +103,12 @@ export function normalizeMerchant(merchant: string): string {
     ;
 }
 
-/** Strong dedupe key: calendar date + amount + normalized merchant. */
+/** Strong dedupe key: calendar date + amount + canonical merchant (Costco, SQ *, store #). */
 export function dedupeKey(date: Date, amount: number, merchant: string): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}|${amount.toFixed(2)}|${normalizeMerchant(merchant)}`;
+  return `${y}-${m}-${d}|${amount.toFixed(2)}|${merchantKey(merchant)}`;
 }
 
 /** Parse common bank date strings into a Date (local calendar day). */
