@@ -324,3 +324,250 @@ export default function ImportPage() {
             </a>
           </p>
 
+          {queue.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-medium text-[var(--ink)]">
+                  Ready to import ({queue.length} file{queue.length === 1 ? "" : "s"})
+                </h2>
+                <label className="cursor-pointer text-sm text-[var(--accent)] underline">
+                  Add more
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => addFiles(e.target.files)}
+                  />
+                </label>
+              </div>
+              <ul className="space-y-1">
+                {queue.map((q) => (
+                  <li
+                    key={q.id}
+                    className="flex items-center justify-between rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
+                  >
+                    <span>
+                      {q.file.name}{" "}
+                      <span className="text-[var(--muted)]">
+                        ({Math.round(q.file.size / 1024)} KB · {q.headers.length} columns)
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(q.id)}
+                      className="text-rose-600 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {!schemasMatch && (
+                <p className="mt-2 text-xs text-amber-800">
+                  Column counts differ across files — mapping uses column position for headerless
+                  bank exports. Rows missing a mapped column are skipped.
+                </p>
+              )}
+            </div>
+          )}
+
+          {queue.length > 0 && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--wash)] px-3 py-2 text-sm">
+                <p className="text-[var(--ink)]">
+                  {mappingBusy ? "Gemini is reading your columns…" : mapNote || "Column mapping"}
+                </p>
+                <button
+                  type="button"
+                  disabled={mappingBusy || busy}
+                  onClick={remapWithGemini}
+                  className="text-[var(--accent)] underline disabled:opacity-50"
+                >
+                  Remap with Gemini
+                </button>
+              </div>
+
+              <label className="block text-sm">
+                Amount style
+                <select
+                  className="mt-1 w-full rounded-md border border-[var(--line)] px-3 py-2"
+                  value={mapping.amountStyle}
+                  onChange={(e) => {
+                    const amountStyle = e.target.value as Mapping["amountStyle"];
+                    setMapping({
+                      ...mapping,
+                      amountStyle,
+                      amount:
+                        amountStyle === "signed"
+                          ? mapping.amount || columns[2]?.key
+                          : undefined,
+                      debit:
+                        amountStyle === "debit_credit"
+                          ? mapping.debit || columns[2]?.key
+                          : undefined,
+                      credit:
+                        amountStyle === "debit_credit"
+                          ? mapping.credit || columns[3]?.key
+                          : undefined,
+                    });
+                  }}
+                >
+                  <option value="signed">One amount column (signed or absolute)</option>
+                  <option value="debit_credit">Separate debit / credit columns</option>
+                </select>
+              </label>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SelectField
+                  label="Date column"
+                  value={mapping.date}
+                  options={columns.length ? columns : headerKeys.map((k) => ({ key: k, label: k, sample: k }))}
+                  onChange={(v) => setMapping({ ...mapping, date: v })}
+                />
+                <SelectField
+                  label="Description / merchant"
+                  value={mapping.description}
+                  options={columns.length ? columns : headerKeys.map((k) => ({ key: k, label: k, sample: k }))}
+                  onChange={(v) => setMapping({ ...mapping, description: v })}
+                />
+                {mapping.amountStyle === "signed" ? (
+                  <SelectField
+                    label="Amount column"
+                    value={mapping.amount ?? ""}
+                    options={columns.length ? columns : headerKeys.map((k) => ({ key: k, label: k, sample: k }))}
+                    onChange={(v) => setMapping({ ...mapping, amount: v })}
+                  />
+                ) : (
+                  <>
+                    <SelectField
+                      label="Debit column"
+                      value={mapping.debit ?? ""}
+                      options={columns.length ? columns : headerKeys.map((k) => ({ key: k, label: k, sample: k }))}
+                      onChange={(v) => setMapping({ ...mapping, debit: v })}
+                    />
+                    <SelectField
+                      label="Credit column"
+                      value={mapping.credit ?? ""}
+                      options={columns.length ? columns : headerKeys.map((k) => ({ key: k, label: k, sample: k }))}
+                      onChange={(v) => setMapping({ ...mapping, credit: v })}
+                    />
+                  </>
+                )}
+                <SelectField
+                  label="Category column (optional)"
+                  value={mapping.category ?? ""}
+                  options={[
+                    { key: "", label: "None — auto-label", sample: "" },
+                    ...(columns.length
+                      ? columns
+                      : headerKeys.map((k) => ({ key: k, label: k, sample: k }))),
+                  ]}
+                  onChange={(v) => setMapping({ ...mapping, category: v || undefined })}
+                />
+              </div>
+
+              <button
+                disabled={!canImport || busy || mappingBusy}
+                onClick={runImport}
+                className="rounded-md bg-[var(--ink)] px-4 py-2 text-white disabled:opacity-50"
+              >
+                {busy
+                  ? `Importing… ${progress ? `${progress.done}/${progress.total}` : ""}`
+                  : `Import ${queue.length} file${queue.length === 1 ? "" : "s"}`}
+              </button>
+              {progress && (
+                <div>
+                  <div className="h-2 overflow-hidden rounded-full bg-[var(--wash)]">
+                    <div
+                      className="h-full bg-[var(--accent)] transition-all"
+                      style={{
+                        width: `${Math.round((progress.done / Math.max(1, progress.total)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    {progress.current}
+                    {progress.done >= progress.total ? " — finished" : ""}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+          {error && <p className="text-sm text-rose-600">{error}</p>}
+        </div>
+
+        {totals && results && (
+          <div className="mt-6 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+            <h2 className="font-display text-xl">Import complete</h2>
+            <p className="text-sm text-[var(--muted)]">
+              Added {totals.imported} · auto-categorized {totals.autoCategorized} · skipped{" "}
+              {totals.duplicates} duplicates · {totals.skipped} other skips.{" "}
+              <Link href="/" className="underline">
+                Open dashboard
+              </Link>
+            </p>
+            <ul className="mt-4 space-y-2">
+              {results.map((r) => (
+                <li
+                  key={r.fileName}
+                  className="rounded-lg bg-[var(--wash)] px-3 py-2 text-sm text-[var(--ink)]"
+                >
+                  <span className="font-medium">{r.fileName}</span>
+                  <span className="text-[var(--muted)]">
+                    {" "}
+                    — {r.imported} added ({r.autoCategorized} labeled), {r.duplicates} duplicates,{" "}
+                    {r.skipped} skipped ({r.rows} rows)
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </main>
+    </>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: ColumnOpt[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="block text-sm">
+      {label}
+      <select
+        className="mt-1 w-full rounded-md border border-[var(--line)] px-3 py-2"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">Select…</option>
+        {options
+          .filter((o) => o.key || o.label)
+          .map((o) => (
+            <option key={o.key || "none"} value={o.key}>
+              {o.sample && o.key.startsWith("col_")
+                ? `${o.label}: ${o.sample}`
+                : o.label || o.key}
+            </option>
+          ))}
+      </select>
+    </label>
+  );
+}
+
+function guess(cols: string[], keys: string[]) {
+  const lower = cols.map((c) => c.toLowerCase());
+  for (const k of keys) {
+    const i = lower.findIndex((c) => c.includes(k));
+    if (i >= 0) return cols[i];
+  }
+  return "";
+}
