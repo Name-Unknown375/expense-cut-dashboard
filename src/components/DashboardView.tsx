@@ -42,7 +42,7 @@ export function DashboardView({
   readOnly?: boolean;
 }) {
   const router = useRouter();
-  const [weekly, setWeekly] = useState(data.weekly);
+  const [cutLabel, setCutLabel] = useState("Uber Eats");
   const periodQs = new URLSearchParams(data.period.query).toString();
   const showMonthTrend = (data.byMonth?.length ?? 0) > 1;
   const showDay = (data.byDay?.length ?? 0) > 1;
@@ -53,18 +53,14 @@ export function DashboardView({
     router.push(`/category/${categoryId}?${periodQs}`);
   }
 
-  async function toggleWeekly(field: "importDone" | "cutDone" | "paceDone") {
+  async function markCut(off: boolean) {
     if (readOnly) return;
-    const next = { ...weekly, [field]: !weekly[field] };
-    setWeekly(next);
-    await fetch("/api/weekly", {
-      method: "PATCH",
+    await fetch("/api/cuts", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        weekStart: weekly.weekStart,
-        [field]: next[field],
-      }),
+      body: JSON.stringify({ label: cutLabel, off }),
     });
+    router.refresh();
   }
 
   return (
@@ -82,21 +78,33 @@ export function DashboardView({
       )}
 
       <div data-brief>
-        <section className="relative overflow-hidden rounded-2xl bg-[var(--ink)] px-6 py-7 text-white shadow-lg">
+        <section data-usual className="relative overflow-hidden rounded-2xl bg-[var(--ink)] px-6 py-7 text-white shadow-lg">
           <div className="pointer-events-none absolute -right-10 -top-10 h-48 w-48 rounded-full bg-[var(--accent)]/30 blur-3xl" />
           <p className="relative text-sm uppercase tracking-[0.14em] text-white/50">{data.period.label}</p>
           <h1 className="relative mt-2 max-w-3xl font-display text-2xl leading-snug sm:text-3xl">
-            {data.brief.lead}
+            {data.awareness.heroLead}
           </h1>
+          <p className="relative mt-4 max-w-3xl text-base leading-relaxed text-white/90">{data.brief.lead}</p>
           {data.brief.notSpending && (
-            <p className="relative mt-4 max-w-3xl text-base text-white/85">{data.brief.notSpending}</p>
+            <p className="relative mt-3 max-w-3xl text-base text-white/85">{data.brief.notSpending}</p>
           )}
-          {data.brief.habits.length > 0 && (
+          {data.awareness.habits.length > 0 && (
             <div className="relative mt-5 max-w-3xl space-y-2 text-sm leading-relaxed text-white/80">
-              {data.brief.habits.map((line) => (
+              {data.awareness.habits.map((line) => (
                 <p key={line}>{line}</p>
               ))}
             </div>
+          )}
+          {data.awareness.overLines.length > 0 && (
+            <div className="relative mt-4 max-w-3xl space-y-2 text-sm leading-relaxed text-white/85">
+              {data.awareness.overLines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          )}
+          <p className="relative mt-4 max-w-3xl text-sm leading-relaxed text-white/80">{data.awareness.ruleLine}</p>
+          {data.awareness.ruleNote && (
+            <p className="relative mt-2 max-w-3xl text-sm text-white/60">{data.awareness.ruleNote}</p>
           )}
           <p className="relative mt-5 max-w-3xl text-sm leading-relaxed text-white/75">{data.brief.taps}</p>
         </section>
@@ -576,39 +584,43 @@ export function DashboardView({
           </ul>
         </section>
 
-        <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
-          <h2 className="font-display text-xl text-[var(--ink)]">Weekly review</h2>
-          <p className="mb-4 text-sm text-[var(--muted)]">
-            Week of {weekly.weekStart} — three quick checks
-          </p>
-          <ul className="space-y-3">
-            {(
-              [
-                ["importDone", "Import new spend (auto-categorized)"],
-                ["cutDone", "Cut or cap one waste item"],
-                ["paceDone", "Check pace vs your 50% target"],
-              ] as const
-            ).map(([field, label]) => (
-              <li key={field}>
-                <label className="flex cursor-pointer items-center gap-3 rounded-lg bg-[var(--wash)] px-3 py-3 text-sm">
-                  <input
-                    type="checkbox"
-                    disabled={readOnly}
-                    checked={Boolean(weekly[field])}
-                    onChange={() => toggleWeekly(field)}
-                    className="h-4 w-4 accent-[var(--accent)]"
-                  />
-                  <span
-                    className={
-                      weekly[field] ? "text-[var(--muted)] line-through" : "text-[var(--ink)]"
-                    }
-                  >
-                    {label}
-                  </span>
-                </label>
-              </li>
-            ))}
-          </ul>
+        <section data-sunday className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+          <h2 className="font-display text-xl text-[var(--ink)]">Sunday check</h2>
+          <p className="mb-3 text-sm text-[var(--muted)]">Week of {data.awareness.sunday.weekLabel}. Same facts on a good week or a bad one.</p>
+          <div className="space-y-2 text-sm leading-relaxed text-[var(--ink)]">
+            <p>
+              The card came out on {data.awareness.sunday.cardDays} day
+              {data.awareness.sunday.cardDays === 1 ? "" : "s"}. {data.awareness.sunday.noTapDays} day
+              {data.awareness.sunday.noTapDays === 1 ? "" : "s"} had no tap.
+            </p>
+            <p>{data.awareness.sunday.capsLine}</p>
+            <p>{data.awareness.sunday.ruleLine}</p>
+            <p>{data.awareness.sunday.cutLine}</p>
+          </div>
+          {!readOnly && (
+            <form
+              className="mt-4 flex flex-wrap items-center gap-2 text-sm"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void markCut(true);
+              }}
+            >
+              <label>
+                Mark a cut off
+                <input
+                  value={cutLabel}
+                  onChange={(e) => setCutLabel(e.target.value)}
+                  className="ml-2 rounded-md border border-[var(--line)] px-2 py-1"
+                />
+              </label>
+              <button type="submit" className="rounded-md bg-[var(--ink)] px-3 py-1.5 text-white">
+                Keep it off
+              </button>
+              <button type="button" onClick={() => void markCut(false)} className="rounded-md border border-[var(--line)] px-3 py-1.5">
+                Turn it back on
+              </button>
+            </form>
+          )}
         </section>
       </div>
     </div>
@@ -703,4 +715,3 @@ function WatchlistForm() {
     </form>
   );
 }
-
