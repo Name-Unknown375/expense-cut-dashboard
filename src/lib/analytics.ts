@@ -14,9 +14,11 @@ import {
   eachMonthOfInterval,
   endOfWeek,
   differenceInCalendarDays,
+  subMonths,
 } from "date-fns";
 import { resolvePeriod, type PeriodSpec } from "./period";
-import { buildDisposition, buildTaps } from "./insights";
+import { buildDisposition, buildPeriodStory, buildTaps, merchantKey, shortMerchant } from "./insights";
+import { buildPace, buildSubscriptions, capDayLabel, pastYouLine } from "./coach";
 import { isInternalMovement } from "./autocat";
 
 export type CutItem = {
@@ -119,13 +121,22 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     byCategory,
     byBucket,
   });
-  const monthComparison = buildMonthComparison(thisSpend, prevSpend, categories, baseline);
+  const monthComparison = buildMonthComparison(thisSpend, prevSpend, allSpend, categories, start);
   const byDay = rollupByDay(thisSpend, start, end);
   const byWeek = rollupByWeek(thisSpend, start, end);
   const byMonth =
     period.mode === "year" || period.dayCount > 45 ? rollupByMonth(thisSpend, start, end) : [];
 
-  const disposition = buildDisposition(thisSpend, period.label);
+  const flaggedTransfers = thisTx.filter(
+    (t) =>
+      /internet banking e-transfer/i.test(t.merchant) &&
+      !/wealth realty|osteopath|naturopath/i.test(t.merchant) &&
+      t.amount >= 150
+  );
+  const disposition = buildDisposition([...thisSpend, ...flaggedTransfers], period.label);
+  const story = buildPeriodStory([...thisSpend, ...flaggedTransfers], period.label);
+  const rentInPeriod = thisTx.filter(isRentLine);
+  const rentDoubled = rentInPeriod.length >= 2;
   const taps = buildTaps(thisSpend);
 
   const rules = await prisma.spendingRule.findMany({
@@ -135,6 +146,56 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
   });
   const capFactor = period.mode === "month" ? 1 : period.dayCount / 30.44;
   const ruleStatus = evaluateRules(rules, thisSpend, topMerchants, capFactor);
+
+  type WatchRow = { id: string; merchantKey: string; label: string; capAmount: number };
+  let savedWatch: WatchRow[] = [];
+  try {
+    savedWatch = JSON.parse(settings?.watchlistsJson || "[]");
+    if (!Array.isArray(savedWatch)) savedWatch = [];
+  } catch {
+    savedWatch = [];
+  }
+  if (savedWatch.length === 0 && topMerchants.some((m) => merchantKey(m.merchant) === "costco")) {
+    savedWatch = [{ id: "suggested-costco", merchantKey: "costco", label: "Costco", capAmount: 400 }];
+  }
+  const watchlists = savedWatch.map((w) => {
+    const mine = thisSpend.filter((t) => merchantKey(t.merchant) === w.merchantKey.toLowerCase());
+    const spent = sum(mine.map((t) => t.amount));
+    const history = allSpend.filter((t) => merchantKey(t.merchant) === w.merchantKey.toLowerCase());
+    const monthTotals: number[] = [];
+    for (let i = 1; i <= 12; i++) {
+      const m = startOfMonth(subMonths(now, i));
+      const { start: ms, end: me } = monthBounds(m);
+      const total = sum(history.filter((t) => t.date >= ms && t.date <= me).map((t) => t.amount));
+      if (total > 0) monthTotals.push(total);
+    }
+    const avg12 = monthTotals.length ? sum(monthTotals) / monthTotals.length : 0;
+    const elapsed = Math.max(1, differenceInCalendarDays(now < end ? now : end, start) + 1);
+    const projected = period.mode === "month" && period.isCurrentMonth ? (spent / elapsed) * period.dayCount : spent;
+    return {
+      ...w,
+      spent,
+      avg12,
+      projected,
+      capDay: capDayLabel(w.label, spent, w.capAmount, start, end, now),
+    };
+  });
+  const capWarnings = [
+    ...rules
+      .filter((r) => r.type === "category_cap" && r.limitAmount && r.category)
+      .map((r) =>
+        capDayLabel(
+          r.category!.name,
+          sum(thisSpend.filter((t) => t.categoryId === r.categoryId).map((t) => t.amount)),
+          (r.limitAmount ?? 0) * capFactor,
+          start,
+          end,
+          now
+        )
+      )
+      .filter((x): x is string => Boolean(x)),
+    ...watchlists.map((w) => w.capDay).filter((x): x is string => Boolean(x)),
+  ];
 
   const { weekStartKey } = await import("./dates");
   const weekKey = weekStartKey(now);
@@ -176,6 +237,14 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     byWeek,
     byMonth,
     disposition,
+    story,
+    rentDoubled,
+    fixedSpent,
+    pace: buildPace(thisSpend, start, end, target),
+    pastYou: pastYouLine(spentThisPeriod, baseline, start, end, now),
+    subscriptions: buildSubscriptions(allSpend, now),
+    watchlists,
+    capWarnings,
     taps,
     ruleStatus,
     weekly,
@@ -248,8 +317,23 @@ function sum(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0);
 }
 
+function isRentLine(t: { merchant: string; category: { name: string } | null }) {
+  return /rent/i.test(t.category?.name || "") || /wealth realty/i.test(t.merchant);
+}
+
+/** One rent payment per month, even if the export lists it twice. */
+function baselineMonthTotal(
+  rows: { amount: number; merchant: string; category: { name: string } | null }[]
+) {
+  const rent = rows.filter(isRentLine);
+  const rest = rows.filter((t) => !isRentLine(t));
+  let rentSum = sum(rent.map((t) => t.amount));
+  if (rent.length >= 2) rentSum = rentSum / rent.length;
+  return sum(rest.map((t) => t.amount)) + rentSum;
+}
+
 async function computeBaseline(
-  allTx: { date: Date; amount: number }[],
+  allTx: { date: Date; amount: number; merchant: string; category: { name: string } | null }[],
   override: number | null,
   focus: Date
 ) {
@@ -259,9 +343,7 @@ async function computeBaseline(
   const totals: number[] = [];
   for (const m of months) {
     const { start, end } = monthBounds(m);
-    const total = sum(
-      allTx.filter((t) => t.date >= start && t.date <= end).map((t) => t.amount)
-    );
+    const total = baselineMonthTotal(allTx.filter((t) => t.date >= start && t.date <= end));
     if (total > 0) totals.push(total);
   }
 
@@ -339,9 +421,9 @@ function rollupMerchants(
     { merchant: string; amount: number; count: number; dates: Date[]; category: string | null; recurring: boolean }
   >();
   for (const t of tx) {
-    const key = t.merchant.trim().toLowerCase();
+    const key = merchantKey(t.merchant);
     const row = map.get(key) ?? {
-      merchant: t.merchant,
+      merchant: shortMerchant(t.merchant),
       amount: 0,
       count: 0,
       dates: [],
@@ -400,7 +482,10 @@ function buildCutList(args: {
         ? `Looks like a repeating charge (${m.count} times this period)`
         : `Paid ${m.count} times this period`,
       estimatedMonthly: monthlyEst,
-      action: m.category === "Subscriptions" || m.recurring ? "Cancel or downgrade" : "Cap or cut in half",
+      action:
+        m.category === "Subscriptions" || m.recurring
+          ? `Cancel — saves about $${Math.round(m.amount)}`
+          : `Cut in half — keep about $${Math.round(m.amount / 2)}`,
       gapContribution: Math.min(100, (monthlyEst / gap) * 100),
       kind: "recurring",
     });
@@ -481,10 +566,11 @@ function buildCutList(args: {
 }
 
 function buildMonthComparison(
-  thisTx: { amount: number; category: { name: string } | null }[],
+  thisTx: { amount: number; date: Date; category: { name: string } | null }[],
   prevTx: { amount: number; category: { name: string } | null }[],
+  allTx: { amount: number; date: Date; category: { name: string } | null }[],
   categories: { name: string }[],
-  baseline: number
+  periodStart: Date
 ) {
   const names = new Set([
     ...categories.map((c) => c.name),
@@ -501,19 +587,35 @@ function buildMonthComparison(
     const n = t.category?.name ?? "Uncategorized";
     prevMap.set(n, (prevMap.get(n) ?? 0) + t.amount);
   }
-  const usualShare = baseline > 0 ? baseline : 1;
+  const priorMonths = lastCompleteMonths(3, periodStart);
+  const usualByCat = new Map<string, number>();
+  for (const name of Array.from(names)) {
+    const totals: number[] = [];
+    for (const m of priorMonths) {
+      const { start: ms, end: me } = monthBounds(m);
+      const total = sum(
+        allTx
+          .filter(
+            (t) =>
+              (t.category?.name ?? "Uncategorized") === name && t.date >= ms && t.date <= me
+          )
+          .map((t) => t.amount)
+      );
+      if (total > 0) totals.push(total);
+    }
+    usualByCat.set(name, totals.length ? sum(totals) / totals.length : 0);
+  }
   return Array.from(names)
     .map((name) => {
       const thisAmt = thisMap.get(name) ?? 0;
       const lastAmt = prevMap.get(name) ?? 0;
-      // Approximate "usual" as average of available months for that category
-      const usual = lastAmt > 0 ? (thisAmt + lastAmt) / 2 : thisAmt;
+      const usual = usualByCat.get(name) ?? 0;
       return {
         name,
         thisMonth: thisAmt,
         lastMonth: lastAmt,
         usual,
-        usualShare: (usual / usualShare) * 100,
+        usualShare: usual,
       };
     })
     .filter((r) => r.thisMonth > 0 || r.lastMonth > 0)
