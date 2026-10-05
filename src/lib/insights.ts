@@ -411,18 +411,18 @@ function sentenceFor(verdict: Verdict, count: number): string {
   }
 }
 
-function isTinyTap(merchant: string): boolean {
+export function isTinyTap(merchant: string): boolean {
   return /food court|vending|nayax|haha/.test(merchant.toLowerCase());
 }
 
-function isGym(merchant: string): boolean {
+export function isGym(merchant: string): boolean {
   const m = merchant.toLowerCase();
   // "MOVE" is Move Studio after the city suffix is stripped. Do not match "studio" alone
   // (tea studios are not gyms) and do not change merchantKey.
   return /yoga|fitness|move studio|anytime|lion heart|\bgym\b|climbing/.test(m) || m === "move";
 }
 
-function gymDisplay(merchant: string): string {
+export function gymDisplay(merchant: string): string {
   const m = merchant.toLowerCase();
   if (m === "move" || /move studio/.test(m)) return "Move Studio";
   if (/anytime/.test(m)) return "Anytime Fitness";
@@ -432,7 +432,7 @@ function gymDisplay(merchant: string): string {
   return merchant;
 }
 
-function isOnlineCluster(merchant: string): boolean {
+export function isOnlineCluster(merchant: string): boolean {
   return /amazon|amzn|steam|staples/.test(merchant.toLowerCase());
 }
 
