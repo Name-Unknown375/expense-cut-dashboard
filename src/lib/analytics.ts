@@ -3,11 +3,20 @@ import {
   lastCompleteMonths,
   monthBounds,
   monthKey,
-  parseMonth,
   projectMonthEnd,
-  formatMonthLabel,
 } from "./dates";
-import { startOfMonth, subMonths } from "date-fns";
+import {
+  startOfMonth,
+  startOfWeek,
+  format,
+  eachDayOfInterval,
+  eachWeekOfInterval,
+  eachMonthOfInterval,
+  endOfWeek,
+  differenceInCalendarDays,
+} from "date-fns";
+import { resolvePeriod, type PeriodSpec } from "./period";
+import { buildDisposition, buildTaps } from "./insights";
 
 export type CutItem = {
   id: string;
@@ -26,13 +35,17 @@ async function ensureBootstrap() {
   await ensureSeeded();
 }
 
-export async function getDashboardData(month?: string) {
+/** @deprecated prefer PeriodSpec — still accepts a month string for share/compat */
+export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
   await ensureBootstrap();
 
   const now = new Date();
-  const focus = month ? parseMonth(month) : startOfMonth(now);
-  const { start, end } = monthBounds(focus);
-  const prev = monthBounds(subMonths(focus, 1));
+  const spec: PeriodSpec =
+    typeof monthOrPeriod === "string" || monthOrPeriod === undefined
+      ? { mode: "month", month: typeof monthOrPeriod === "string" ? monthOrPeriod : undefined }
+      : monthOrPeriod;
+  const period = resolvePeriod(spec, now);
+  const { start, end, prevStart, prevEnd } = period;
 
   const settings = await prisma.settings.findUnique({ where: { id: "default" } });
   const categories = await prisma.category.findMany({ orderBy: { sortOrder: "asc" } });
@@ -44,7 +57,7 @@ export async function getDashboardData(month?: string) {
       orderBy: { date: "desc" },
     }),
     prisma.transaction.findMany({
-      where: { date: { gte: prev.start, lte: prev.end } },
+      where: { date: { gte: prevStart, lte: prevEnd } },
       include: { category: true },
     }),
     prisma.transaction.findMany({
@@ -53,38 +66,59 @@ export async function getDashboardData(month?: string) {
     }),
   ]);
 
-  const spentThisMonth = sum(thisTx.map((t) => t.amount));
-  const spentLastMonth = sum(prevTx.map((t) => t.amount));
+  const spentThisPeriod = sum(thisTx.map((t) => t.amount));
+  const spentPrevPeriod = sum(prevTx.map((t) => t.amount));
   const fixedSpent = sum(
     thisTx.filter((t) => t.category?.bucket === "Fixed").map((t) => t.amount)
   );
-  const variableSpent = Math.max(0, spentThisMonth - fixedSpent);
+  const variableSpent = Math.max(0, spentThisPeriod - fixedSpent);
 
-  const baseline = await computeBaseline(allTx, settings?.baselineOverride ?? null, focus);
-  const target = baseline * 0.5;
-  const asOf = focus.getTime() === startOfMonth(now).getTime() ? now : end;
-  // Pace variable spend; keep Fixed as already booked (rent etc. shouldn't be annualized from day 1)
-  const projected = fixedSpent + projectMonthEnd(variableSpent, asOf);
-  const targetUsedPct = target > 0 ? (spentThisMonth / target) * 100 : 0;
-  const remaining = Math.max(0, target - spentThisMonth);
+  const baselineFocus = period.mode === "month" ? start : startOfMonth(now);
+  const baseline = await computeBaseline(allTx, settings?.baselineOverride ?? null, baselineFocus);
+  // Scale 50% target to period length vs a typical month (~30.4 days)
+  const monthFactor = period.dayCount / 30.44;
+  const target = baseline * 0.5 * (period.mode === "month" ? 1 : monthFactor);
+
+  let projected = spentThisPeriod;
+  if (period.mode === "month" && period.isCurrentMonth) {
+    projected = fixedSpent + projectMonthEnd(variableSpent, now);
+  } else if (period.mode === "year" && end.getFullYear() === now.getFullYear()) {
+    const elapsed = Math.max(1, differenceInCalendarDays(now, start) + 1);
+    const total = period.dayCount;
+    projected = fixedSpent + (variableSpent / elapsed) * (total - (fixedSpent > 0 ? 0 : 0));
+    // Pace all spend for open year (fixed already included in spent)
+    projected = (spentThisPeriod / elapsed) * total;
+  }
+
+  const targetUsedPct = target > 0 ? (spentThisPeriod / target) * 100 : 0;
+  const remaining = Math.max(0, target - spentThisPeriod);
   const gapToClose = Math.max(0, projected - target);
   const income = settings?.monthlyIncome ?? null;
-  const spendOfIncome = income && income > 0 ? (spentThisMonth / income) * 100 : null;
+  const spendOfIncome =
+    income && income > 0
+      ? (spentThisPeriod / (income * (period.mode === "month" ? 1 : monthFactor))) * 100
+      : null;
 
-  const byCategory = rollupByCategory(thisTx, categories, spentThisMonth);
+  const byCategory = rollupByCategory(thisTx, categories, spentThisPeriod);
   const byBucket = rollupByBucket(byCategory);
   const topMerchants = rollupMerchants(thisTx);
   const cutList = buildCutList({
     thisTx,
     prevTx,
     allTx,
-    spentThisMonth,
+    spentThisMonth: spentThisPeriod,
     target,
     gapToClose,
     byCategory,
     byBucket,
   });
   const monthComparison = buildMonthComparison(thisTx, prevTx, categories, baseline);
+  const byDay = rollupByDay(thisTx, start, end);
+  const byWeek = rollupByWeek(thisTx, start, end);
+  const byMonth = period.mode === "year" || period.dayCount > 45 ? rollupByMonth(thisTx, start, end) : [];
+
+  const disposition = buildDisposition(thisTx, period.label);
+  const taps = buildTaps(thisTx);
 
   const rules = await prisma.spendingRule.findMany({
     where: { active: true },
@@ -101,12 +135,23 @@ export async function getDashboardData(month?: string) {
   }
 
   return {
-    month: monthKey(focus),
-    monthLabel: formatMonthLabel(focus),
+    period: {
+      mode: period.mode,
+      label: period.label,
+      start: format(start, "yyyy-MM-dd"),
+      end: format(end, "yyyy-MM-dd"),
+      query: period.query,
+      dayCount: period.dayCount,
+    },
+    // backwards-compatible aliases used by existing UI
+    month: period.query.month || format(start, "yyyy-MM"),
+    monthLabel: period.label,
     baseline,
     target,
-    spentThisMonth,
-    spentLastMonth,
+    spentThisMonth: spentThisPeriod,
+    spentLastMonth: spentPrevPeriod,
+    spentThisPeriod,
+    spentPrevPeriod,
     projected,
     targetUsedPct,
     remaining,
@@ -118,10 +163,75 @@ export async function getDashboardData(month?: string) {
     topMerchants,
     cutList,
     monthComparison,
+    byDay,
+    byWeek,
+    byMonth,
+    disposition,
+    taps,
     ruleStatus,
     weekly,
     categories,
   };
+}
+
+function rollupByDay(
+  tx: { date: Date; amount: number }[],
+  start: Date,
+  end: Date
+) {
+  const days = eachDayOfInterval({ start, end });
+  // Cap chart points for very long ranges — sample by week buckets instead handled elsewhere
+  if (days.length > 62) return [];
+  const map = new Map<string, number>();
+  for (const t of tx) {
+    const k = format(t.date, "yyyy-MM-dd");
+    map.set(k, (map.get(k) ?? 0) + t.amount);
+  }
+  return days.map((d) => {
+    const key = format(d, "yyyy-MM-dd");
+    return { key, label: format(d, "MMM d"), amount: map.get(key) ?? 0 };
+  });
+}
+
+function rollupByWeek(
+  tx: { date: Date; amount: number }[],
+  start: Date,
+  end: Date
+) {
+  const weeks = eachWeekOfInterval({ start, end }, { weekStartsOn: 1 });
+  return weeks.map((w) => {
+    const wStart = startOfWeek(w, { weekStartsOn: 1 });
+    const wEnd = endOfWeek(w, { weekStartsOn: 1 });
+    const amount = sum(
+      tx
+        .filter((t) => t.date >= wStart && t.date <= wEnd && t.date >= start && t.date <= end)
+        .map((t) => t.amount)
+    );
+    return {
+      key: format(wStart, "yyyy-MM-dd"),
+      label: `${format(wStart, "MMM d")}–${format(wEnd > end ? end : wEnd, "MMM d")}`,
+      amount,
+    };
+  });
+}
+
+function rollupByMonth(
+  tx: { date: Date; amount: number }[],
+  start: Date,
+  end: Date
+) {
+  const months = eachMonthOfInterval({ start, end });
+  return months.map((m) => {
+    const { start: ms, end: me } = monthBounds(m);
+    const amount = sum(
+      tx.filter((t) => t.date >= ms && t.date <= me).map((t) => t.amount)
+    );
+    return {
+      key: monthKey(m),
+      label: format(m, "MMM yyyy"),
+      amount,
+    };
+  });
 }
 
 function sum(nums: number[]) {
