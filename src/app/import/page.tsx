@@ -65,11 +65,8 @@ export default function ImportPage() {
       .then((r) => r.json())
       .then((d) => {
         setAiEnabled(Boolean(d.aiEnabled));
-        // Don't restore a saved mapping onto headerless CIBC files blindly —
-        // Gemini will re-infer after upload. Keep amountStyle preference only.
-        if (d.mapping?.amountStyle) {
-          setMapping((m) => ({ ...m, amountStyle: d.mapping.amountStyle }));
-        }
+        // Do NOT restore saved amountStyle here — it races Gemini and can leave
+        // "signed" selected while the note says debit/credit (CIBC bug).
       });
   }, []);
 
@@ -89,18 +86,30 @@ export default function ImportPage() {
       const data = await res.json();
       if (data.columns?.length) setColumns(data.columns);
       if (data.mapping) {
-        setMapping((m) => ({
-          ...m,
-          ...data.mapping,
+        const style =
+          data.mapping.amountStyle === "debit_credit" ? "debit_credit" : "signed";
+        // Replace mapping wholesale so debit/credit and signed never mix
+        setMapping({
+          date: data.mapping.date || "",
+          description: data.mapping.description || "",
+          amountStyle: style,
+          headerless: Boolean(data.mapping.headerless),
+          amount: style === "signed" ? data.mapping.amount || undefined : undefined,
+          debit: style === "debit_credit" ? data.mapping.debit || undefined : undefined,
+          credit: style === "debit_credit" ? data.mapping.credit || undefined : undefined,
           category: data.mapping.category || undefined,
-        }));
+        });
         const who = data.enabled ? "Gemini" : "Auto";
         const conf =
           typeof data.mapping.confidence === "number"
             ? ` (${Math.round(data.mapping.confidence * 100)}% sure)`
             : "";
+        const styleLabel =
+          style === "debit_credit" ? "separate debit/credit" : "one amount column";
         setMapNote(
-          `${who} mapped columns${conf}${data.mapping.note ? ` — ${data.mapping.note}` : ""}`
+          `${who} mapped columns${conf} · ${styleLabel}${
+            data.mapping.note ? ` — ${data.mapping.note}` : ""
+          }${data.mapping.headerless ? " · headerless file" : ""}`
         );
       } else {
         // Heuristic fallback on labeled headers
@@ -200,9 +209,11 @@ export default function ImportPage() {
     if (!queue[0]) return;
     setMapping({
       date: "",
-      amount: "",
+      amount: undefined,
+      debit: undefined,
+      credit: undefined,
       description: "",
-      amountStyle: mapping.amountStyle,
+      amountStyle: "signed",
       headerless: false,
     });
     await suggestMappingFor(queue[0], queue[0].headers, queue[0].sampleRows);
@@ -228,8 +239,19 @@ export default function ImportPage() {
     setError("");
     setProgress({ done: 0, total: queue.length, current: queue[0].file.name });
 
+    // Ensure UI style matches fields we send (avoid signed+empty amount)
+    const payload: Mapping = {
+      ...mapping,
+      amount:
+        mapping.amountStyle === "signed" ? mapping.amount || undefined : undefined,
+      debit:
+        mapping.amountStyle === "debit_credit" ? mapping.debit || undefined : undefined,
+      credit:
+        mapping.amountStyle === "debit_credit" ? mapping.credit || undefined : undefined,
+    };
+
     const form = new FormData();
-    form.append("mapping", JSON.stringify(mapping));
+    form.append("mapping", JSON.stringify(payload));
     for (const q of queue) form.append("files", q.file);
 
     try {
@@ -249,11 +271,15 @@ export default function ImportPage() {
       window.clearInterval(tick);
       setBusy(false);
       setProgress(null);
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError("Import failed");
+        setError(
+          typeof data.error === "string" && data.error
+            ? data.error
+            : `Import failed (HTTP ${res.status})`
+        );
         return;
       }
-      const data = await res.json();
       setResults(data.files ?? []);
       setTotals({
         imported: data.imported ?? 0,
@@ -261,11 +287,12 @@ export default function ImportPage() {
         skipped: data.skipped ?? 0,
         autoCategorized: data.autoCategorized ?? 0,
       });
+      if (data.warning) setMapNote(String(data.warning));
       setProgress({ done: queue.length, total: queue.length, current: "Done" });
-    } catch {
+    } catch (e) {
       setBusy(false);
       setProgress(null);
-      setError("Import failed");
+      setError(e instanceof Error ? e.message : "Import failed (network error)");
     }
   }
 
@@ -276,7 +303,7 @@ export default function ImportPage() {
         <h1 className="font-display text-3xl text-[var(--ink)]">Import CSV</h1>
         <p className="mt-1 text-[var(--muted)]">
           Upload one or many bank CSVs. Gemini maps columns and categories — no hand labeling.
-          Duplicates are skipped.
+          Re-imports skip duplicates (same date + amount + merchant); existing spend is never wiped.
         </p>
 
         <div className="mt-6 space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
@@ -350,7 +377,6 @@ export default function ImportPage() {
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--wash)] px-3 py-2 text-sm">
                 <p className="text-[var(--ink)]">
                   {mappingBusy ? "Gemini is reading your columns…" : mapNote || "Column mapping"}
-                  {mapping.headerless ? " · headerless file" : ""}
                 </p>
                 <button
                   type="button"
@@ -367,12 +393,25 @@ export default function ImportPage() {
                 <select
                   className="mt-1 w-full rounded-md border border-[var(--line)] px-3 py-2"
                   value={mapping.amountStyle}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const amountStyle = e.target.value as Mapping["amountStyle"];
                     setMapping({
                       ...mapping,
-                      amountStyle: e.target.value as Mapping["amountStyle"],
-                    })
-                  }
+                      amountStyle,
+                      amount:
+                        amountStyle === "signed"
+                          ? mapping.amount || columns[2]?.key
+                          : undefined,
+                      debit:
+                        amountStyle === "debit_credit"
+                          ? mapping.debit || columns[2]?.key
+                          : undefined,
+                      credit:
+                        amountStyle === "debit_credit"
+                          ? mapping.credit || columns[3]?.key
+                          : undefined,
+                    });
+                  }}
                 >
                   <option value="signed">One amount column (signed or absolute)</option>
                   <option value="debit_credit">Separate debit / credit columns</option>
