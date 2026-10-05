@@ -1,1 +1,1 @@
-PLACEHOLDER
+$file:/agent/src/lib/insights.ts
