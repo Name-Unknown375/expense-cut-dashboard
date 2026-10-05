@@ -1,6 +1,6 @@
 import { prisma } from "./db";
 import { DEFAULT_CATEGORIES } from "./categories";
-import { resolveCategoryId, rememberMerchant } from "./autocat";
+import { guessCategoryName, rememberMerchant, resolveCategoryId } from "./autocat";
 import { subMonths, setDate, startOfMonth } from "date-fns";
 
 let seeding: Promise<void> | null = null;
@@ -15,9 +15,13 @@ export async function ensureSeeded() {
     await prisma.category.upsert({
       where: { name: "Transfers" },
       create: { name: "Transfers", bucket: "Transfer", color: "#94a3b8", sortOrder: 12 },
-      update: {},
+      update: { bucket: "Transfer" },
     });
-    await reclassifyNonSpend();
+    await prisma.category.updateMany({
+      where: { name: "Other", bucket: "Needs" },
+      data: { bucket: "Other" },
+    });
+    await reclassifyByHeuristics();
 
     await prisma.settings.upsert({
       where: { id: "default" },
@@ -64,35 +68,23 @@ export async function ensureSeeded() {
   }
 }
 
-/** Move account transfers and rent e-transfers off the wrong categories. */
-async function reclassifyNonSpend() {
-  const [transfers, rent] = await Promise.all([
-    prisma.category.findUnique({ where: { name: "Transfers" } }),
-    prisma.category.findUnique({ where: { name: "Rent" } }),
-  ]);
-  if (transfers) {
+/** Re-apply category rules to imported merchants and refresh remembered labels. */
+async function reclassifyByHeuristics() {
+  const categories = await prisma.category.findMany();
+  const byName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
+  const groups = await prisma.transaction.groupBy({
+    by: ["merchant", "categoryId"],
+  });
+  for (const row of groups) {
+    const guess = guessCategoryName(row.merchant);
+    if (!guess) continue;
+    const nextId = byName.get(guess.toLowerCase());
+    if (!nextId || nextId === row.categoryId) continue;
     await prisma.transaction.updateMany({
-      where: {
-        NOT: { categoryId: transfers.id },
-        OR: [
-          { merchant: { contains: "INTERNET TRANSFER" } },
-          { merchant: { contains: "CASH ADVANCE" } },
-          { merchant: { contains: "TO CARD " } },
-          { merchant: { contains: "TO ACCOUNT " } },
-          { merchant: { contains: "BRANCH TRANSACTION WITHDRAWAL" } },
-        ],
-      },
-      data: { categoryId: transfers.id },
+      where: { merchant: row.merchant, categoryId: row.categoryId },
+      data: { categoryId: nextId },
     });
-  }
-  if (rent) {
-    await prisma.transaction.updateMany({
-      where: {
-        merchant: { contains: "Wealth Realty" },
-        NOT: { categoryId: rent.id },
-      },
-      data: { categoryId: rent.id },
-    });
+    await rememberMerchant(prisma, row.merchant, nextId);
   }
 }
 

@@ -11,7 +11,7 @@ export async function GET() {
 
 const schema = z.object({
   name: z.string().min(1),
-  bucket: z.enum(["Needs", "Wants", "Fixed"]),
+  bucket: z.enum(["Needs", "Wants", "Fixed", "Transfer", "Other"]),
   color: z.string().optional(),
 });
 
