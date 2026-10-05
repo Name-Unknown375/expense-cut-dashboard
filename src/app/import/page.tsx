@@ -21,7 +21,7 @@ type FileResult = {
   duplicates: number;
   skipped: number;
   rows: number;
-  needsReview: { id: string; merchant: string; amount: number; date: string }[];
+  autoCategorized: number;
 };
 
 type QueuedFile = { id: string; file: File; headers: string[] };
@@ -40,12 +40,11 @@ export default function ImportPage() {
     imported: number;
     duplicates: number;
     skipped: number;
-    needsReview: FileResult["needsReview"];
+    autoCategorized: number;
   } | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(
     null
   );
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -55,9 +54,6 @@ export default function ImportPage() {
       .then((d) => {
         if (d.mapping) setMapping((m) => ({ ...m, ...d.mapping }));
       });
-    fetch("/api/categories")
-      .then((r) => r.json())
-      .then((d) => setCategories(d.categories ?? []));
   }, []);
 
   function addFiles(list: FileList | File[] | null) {
@@ -152,7 +148,7 @@ export default function ImportPage() {
         imported: data.imported ?? 0,
         duplicates: data.duplicates ?? 0,
         skipped: data.skipped ?? 0,
-        needsReview: data.needsReview ?? [],
+        autoCategorized: data.autoCategorized ?? 0,
       });
       setProgress({ done: queue.length, total: queue.length, current: "Done" });
     } catch {
@@ -162,32 +158,15 @@ export default function ImportPage() {
     }
   }
 
-  async function setCategory(id: string, categoryId: string) {
-    await fetch(`/api/transactions/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ categoryId }),
-    });
-    setTotals((t) =>
-      t ? { ...t, needsReview: t.needsReview.filter((x) => x.id !== id) } : t
-    );
-    setResults((rs) =>
-      rs
-        ? rs.map((r) => ({
-            ...r,
-            needsReview: r.needsReview.filter((x) => x.id !== id),
-          }))
-        : rs
-    );
-  }
-
   return (
     <>
       <Nav />
       <main className="mx-auto max-w-3xl px-4 py-8">
         <h1 className="font-display text-3xl text-[var(--ink)]">Import CSV</h1>
         <p className="mt-1 text-[var(--muted)]">
-          Upload one or many bank CSVs. We remember your column mapping and skip duplicate rows.
+          Upload one or many bank CSVs. Categories are assigned automatically (heuristics +
+          Gemini for unknowns) — no hand labeling. Column mapping is remembered; duplicates
+          are skipped.
         </p>
 
         <div className="mt-6 space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
@@ -312,7 +291,7 @@ export default function ImportPage() {
                   </>
                 )}
                 <SelectField
-                  label="Category (optional)"
+                  label="Category column (optional — we auto-label either way)"
                   value={mapping.category ?? ""}
                   options={["", ...headers]}
                   onChange={(v) => setMapping({ ...mapping, category: v || undefined })}
@@ -353,10 +332,10 @@ export default function ImportPage() {
           <div className="mt-6 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
             <h2 className="font-display text-xl">Import complete</h2>
             <p className="text-sm text-[var(--muted)]">
-              Added {totals.imported} · skipped {totals.duplicates} duplicates · {totals.skipped}{" "}
-              other skips.{" "}
-              <Link href="/transactions" className="underline">
-                View list
+              Added {totals.imported} · auto-categorized {totals.autoCategorized} · skipped{" "}
+              {totals.duplicates} duplicates · {totals.skipped} other skips.{" "}
+              <Link href="/" className="underline">
+                Open dashboard
               </Link>
             </p>
             <ul className="mt-4 space-y-2">
@@ -368,43 +347,12 @@ export default function ImportPage() {
                   <span className="font-medium">{r.fileName}</span>
                   <span className="text-[var(--muted)]">
                     {" "}
-                    — {r.imported} added, {r.duplicates} duplicates, {r.skipped} skipped ({r.rows}{" "}
-                    rows)
+                    — {r.imported} added ({r.autoCategorized} labeled), {r.duplicates} duplicates,{" "}
+                    {r.skipped} skipped ({r.rows} rows)
                   </span>
                 </li>
               ))}
             </ul>
-            {totals.needsReview.length > 0 && (
-              <>
-                <h3 className="mt-4 font-medium">Quick categorize</h3>
-                <ul className="mt-2 space-y-2">
-                  {totals.needsReview.map((row) => (
-                    <li
-                      key={row.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
-                    >
-                      <span>
-                        {row.merchant} · ${row.amount.toFixed(2)}
-                      </span>
-                      <select
-                        className="rounded border border-[var(--line)] px-2 py-1"
-                        defaultValue=""
-                        onChange={(e) => {
-                          if (e.target.value) setCategory(row.id, e.target.value);
-                        }}
-                      >
-                        <option value="">Pick category</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
           </div>
         )}
       </main>
