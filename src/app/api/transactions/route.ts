@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { ensureSeeded } from "@/lib/seed";
+import { rememberMerchant, resolveCategoryId } from "@/lib/autocat";
+import { aiCategorizeMerchants, geminiConfigured } from "@/lib/gemini";
 import { z } from "zod";
 import { periodFromSearchParams, resolvePeriod } from "@/lib/period";
 
@@ -68,28 +70,50 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
   const data = parsed.data;
+  const merchant = data.merchant.trim();
+
+  let categoryId = data.categoryId || null;
+  if (!categoryId) {
+    const [merchantRules, categories] = await Promise.all([
+      prisma.merchantRule.findMany(),
+      prisma.category.findMany(),
+    ]);
+    const ruleMap = new Map(merchantRules.map((r) => [r.merchant, r.categoryId]));
+    const catByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
+    const resolved = resolveCategoryId(merchant, { ruleMap, catByName });
+    categoryId = resolved.categoryId;
+
+    if (
+      geminiConfigured() &&
+      (resolved.source === "other" || resolved.source === "none")
+    ) {
+      const aiMap = await aiCategorizeMerchants(
+        [merchant],
+        categories.map((c) => c.name)
+      );
+      const catName = aiMap.get(merchant.toLowerCase());
+      const aiId = catName ? catByName.get(catName.toLowerCase()) : null;
+      if (aiId) categoryId = aiId;
+    }
+
+    if (categoryId) {
+      await rememberMerchant(prisma, merchant, categoryId);
+    }
+  } else {
+    await rememberMerchant(prisma, merchant, categoryId);
+  }
+
   const tx = await prisma.transaction.create({
     data: {
       date: new Date(data.date),
       amount: data.amount,
-      merchant: data.merchant.trim(),
+      merchant,
       note: data.note ?? null,
-      categoryId: data.categoryId || null,
+      categoryId,
       source: "manual",
     },
     include: { category: true },
   });
-
-  if (data.categoryId) {
-    await prisma.merchantRule.upsert({
-      where: { merchant: data.merchant.trim().toLowerCase() },
-      create: {
-        merchant: data.merchant.trim().toLowerCase(),
-        categoryId: data.categoryId,
-      },
-      update: { categoryId: data.categoryId },
-    });
-  }
 
   return NextResponse.json({ transaction: tx });
 }
