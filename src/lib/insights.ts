@@ -98,10 +98,25 @@ export function shortMerchant(raw: string): string {
   const original = raw.trim();
   const lower = original.toLowerCase();
   if (/costco gas/.test(lower)) return "Costco Gas";
+  if (/annual renewal/.test(lower) && /costco/.test(lower)) return "Costco membership";
   if (/costco/.test(lower)) return "Costco";
   if (/wealth realty/.test(lower)) return "Wealth Realty rent";
   if (/ubereats|uber eats/.test(lower)) return "Uber Eats";
+  if (/uberonemem|uber one/.test(lower)) return "Uber One";
   if (/ubertrip|uber trip|uber canada\/uber(?!e)/.test(lower)) return "Uber";
+  if (/preauthorized debit/.test(lower)) {
+    if (/hydro/.test(lower)) return "BC Hydro";
+    if (/insurance corporation/.test(lower)) return "ICBC";
+    if (/paypal/.test(lower)) return "PayPal";
+    if (/interactive/.test(lower)) return "Interactive Brokers";
+    if (/cibc loans|prêt cibc|pret cibc/.test(lower)) return "CIBC loan";
+    if (/apex climbing/.test(lower)) return "Apex Climbing";
+    if (/shaw/.test(lower)) return "Shaw";
+    if (/\bcanada\b/.test(lower)) return "PAD Canada";
+    if (/\bcsi\b/.test(lower)) return "PAD CSI";
+    if (/aviso/.test(lower)) return "Aviso";
+    if (/rbcins/.test(lower)) return "RBC Insurance";
+  }
   if (/domino/.test(lower)) return "Domino's";
   if (/downlow|dl chicken/.test(lower)) return "Downlow Chicken";
   if (/nayax|vending/.test(lower)) return "Vending";
@@ -125,8 +140,8 @@ export function shortMerchant(raw: string): string {
     .trim();
   s = s.replace(/,?\s+[A-Za-z .'-]+,\s*[A-Z]{2}\b.*$/, "").trim();
   s = s.replace(/\s{2,}/g, " ");
-  if (s.length > 42) s = s.slice(0, 40).trim();
-  return s || original.slice(0, 42);
+  if (s.length > 64) s = s.slice(0, 64).trim();
+  return s || original.slice(0, 64);
 }
 
 function groupByMerchant(tx: Tx[]) {
