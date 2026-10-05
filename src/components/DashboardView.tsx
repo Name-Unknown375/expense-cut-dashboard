@@ -19,6 +19,7 @@ import type { Verdict } from "@/lib/insights";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PeriodFilter } from "./PeriodFilter";
+import { AiInsightPanel } from "./AiInsightPanel";
 
 const verdictStyle: Record<Verdict, string> = {
   Fixed: "bg-slate-200 text-slate-800",
@@ -202,6 +203,8 @@ export function DashboardView({
           </table>
         </div>
       </section>
+
+      {!readOnly && <AiInsightPanel periodQuery={periodQs} />}
 
       {/* Where the taps are */}
       {data.taps.lines.length > 0 && (
@@ -511,7 +514,7 @@ export function DashboardView({
           <ul className="space-y-3">
             {(
               [
-                ["importDone", "Import and categorize new spend"],
+                ["importDone", "Import new spend (auto-categorized)"],
                 ["cutDone", "Cut or cap one waste item"],
                 ["paceDone", "Check pace vs your 50% target"],
               ] as const
