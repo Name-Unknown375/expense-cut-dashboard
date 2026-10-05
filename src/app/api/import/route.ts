@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { ensureSeeded } from "@/lib/seed";
+import { rememberMerchant, resolveCategoryId } from "@/lib/autocat";
+import { aiCategorizeMerchants, geminiConfigured } from "@/lib/gemini";
 import Papa from "papaparse";
 import { z } from "zod";
 import { format } from "date-fns";
@@ -27,10 +29,18 @@ export async function GET() {
   const mapping = settings?.csvColumnMapping
     ? JSON.parse(settings.csvColumnMapping)
     : null;
-  return NextResponse.json({ mapping });
+  return NextResponse.json({ mapping, aiEnabled: geminiConfigured() });
 }
 
-async function importOneFile(
+type PendingRow = {
+  date: Date;
+  amount: number;
+  merchant: string;
+  categoryId: string | null;
+  source: "csv" | "memory" | "heuristic" | "other" | "none" | "ai";
+};
+
+async function parseFileRows(
   file: File,
   mapping: Mapping,
   existingKeys: Set<string>,
@@ -43,10 +53,9 @@ async function importOneFile(
     skipEmptyLines: true,
   });
 
-  let imported = 0;
   let skipped = 0;
   let duplicates = 0;
-  const review: { id: string; merchant: string; amount: number; date: string }[] = [];
+  const pending: PendingRow[] = [];
   const headers = parsed.meta.fields ?? [];
 
   for (const row of parsed.data) {
@@ -88,44 +97,33 @@ async function importOneFile(
       duplicates += 1;
       continue;
     }
-
-    let categoryId: string | null = null;
-    if (mapping.category && row[mapping.category]) {
-      categoryId = catByName.get(row[mapping.category].trim().toLowerCase()) ?? null;
-    }
-    if (!categoryId) {
-      categoryId = ruleMap.get(merchant.toLowerCase()) ?? null;
-    }
-
-    const tx = await prisma.transaction.create({
-      data: {
-        date,
-        amount,
-        merchant,
-        categoryId,
-        source: "csv",
-      },
-    });
+    // Reserve key so later files in the same batch also dedupe
     existingKeys.add(key);
-    imported += 1;
-    if (!categoryId) {
-      review.push({
-        id: tx.id,
-        merchant: tx.merchant,
-        amount: tx.amount,
-        date: tx.date.toISOString(),
-      });
-    }
+
+    const csvCategory =
+      mapping.category && row[mapping.category] ? row[mapping.category].trim() : null;
+    const resolved = resolveCategoryId(merchant, {
+      ruleMap,
+      catByName,
+      csvCategory,
+    });
+
+    pending.push({
+      date,
+      amount,
+      merchant,
+      categoryId: resolved.categoryId,
+      source: resolved.source,
+    });
   }
 
   return {
     fileName: file.name,
     headers,
-    imported,
-    duplicates,
     skipped,
+    duplicates,
     rows: parsed.data.length,
-    needsReview: review,
+    pending,
   };
 }
 
@@ -141,7 +139,7 @@ export async function POST(request: Request) {
   await prisma.settings.upsert({
     where: { id: "default" },
     create: { id: "default", csvColumnMapping: JSON.stringify(mapping) },
-    update: { csvColumnMapping: JSON.stringify(mapping) },
+    update: { csvColumnMapping: JSON.stringify(mapping), aiCacheJson: null },
   });
 
   const files: File[] = [];
@@ -159,8 +157,8 @@ export async function POST(request: Request) {
   const ruleMap = new Map(merchantRules.map((r) => [r.merchant, r.categoryId]));
   const categories = await prisma.category.findMany();
   const catByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
+  const categoryNames = categories.map((c) => c.name);
 
-  // Load existing keys for dedupe (recent + all is fine for personal apps)
   const existing = await prisma.transaction.findMany({
     select: { date: true, amount: true, merchant: true },
   });
@@ -168,32 +166,88 @@ export async function POST(request: Request) {
     existing.map((t) => dedupeKey(t.date, t.amount, t.merchant))
   );
 
-  const results = [];
+  const parsedFiles = [];
   for (const file of files) {
-    const result = await importOneFile(file, mapping, existingKeys, ruleMap, catByName);
-    results.push(result);
+    parsedFiles.push(await parseFileRows(file, mapping, existingKeys, ruleMap, catByName));
   }
 
-  const totals = results.reduce(
-    (acc, r) => ({
-      imported: acc.imported + r.imported,
-      duplicates: acc.duplicates + r.duplicates,
-      skipped: acc.skipped + r.skipped,
-      needsReview: acc.needsReview.concat(r.needsReview),
-    }),
-    {
-      imported: 0,
-      duplicates: 0,
-      skipped: 0,
-      needsReview: [] as { id: string; merchant: string; amount: number; date: string }[],
+  // AI pass for merchants that only hit Other / none
+  const needsAi = new Set<string>();
+  for (const f of parsedFiles) {
+    for (const row of f.pending) {
+      if (row.source === "other" || row.source === "none") {
+        needsAi.add(row.merchant);
+      }
     }
-  );
+  }
+
+  let aiLabeled = 0;
+  if (needsAi.size > 0 && geminiConfigured()) {
+    const aiMap = await aiCategorizeMerchants(Array.from(needsAi), categoryNames);
+    for (const f of parsedFiles) {
+      for (const row of f.pending) {
+        if (row.source !== "other" && row.source !== "none") continue;
+        const catName = aiMap.get(row.merchant.trim().toLowerCase());
+        if (!catName) continue;
+        const id = catByName.get(catName.toLowerCase());
+        if (!id) continue;
+        row.categoryId = id;
+        row.source = "ai";
+        aiLabeled += 1;
+        await rememberMerchant(prisma, row.merchant, id);
+        ruleMap.set(row.merchant.trim().toLowerCase(), id);
+      }
+    }
+  }
+
+  const results = [];
+  let totalImported = 0;
+  let totalDup = 0;
+  let totalSkip = 0;
+  let totalAuto = 0;
+
+  for (const f of parsedFiles) {
+    let imported = 0;
+    let autoCategorized = 0;
+    for (const row of f.pending) {
+      await prisma.transaction.create({
+        data: {
+          date: row.date,
+          amount: row.amount,
+          merchant: row.merchant,
+          categoryId: row.categoryId,
+          source: "csv",
+        },
+      });
+      imported += 1;
+      if (row.categoryId) autoCategorized += 1;
+      if (row.source === "csv" || row.source === "heuristic") {
+        await rememberMerchant(prisma, row.merchant, row.categoryId!);
+        ruleMap.set(row.merchant.trim().toLowerCase(), row.categoryId!);
+      }
+    }
+    results.push({
+      fileName: f.fileName,
+      headers: f.headers,
+      imported,
+      duplicates: f.duplicates,
+      skipped: f.skipped,
+      rows: f.rows,
+      autoCategorized,
+    });
+    totalImported += imported;
+    totalDup += f.duplicates;
+    totalSkip += f.skipped;
+    totalAuto += autoCategorized;
+  }
 
   return NextResponse.json({
     files: results,
-    imported: totals.imported,
-    duplicates: totals.duplicates,
-    skipped: totals.skipped,
-    needsReview: totals.needsReview,
+    imported: totalImported,
+    duplicates: totalDup,
+    skipped: totalSkip,
+    autoCategorized: totalAuto,
+    aiLabeled,
+    aiEnabled: geminiConfigured(),
   });
 }

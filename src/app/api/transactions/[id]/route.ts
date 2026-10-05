@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { rememberMerchant } from "@/lib/autocat";
 import { z } from "zod";
 
 const updateSchema = z.object({
@@ -33,11 +34,7 @@ export async function PATCH(
   });
 
   if (data.categoryId && tx.merchant) {
-    await prisma.merchantRule.upsert({
-      where: { merchant: tx.merchant.toLowerCase() },
-      create: { merchant: tx.merchant.toLowerCase(), categoryId: data.categoryId },
-      update: { categoryId: data.categoryId },
-    });
+    await rememberMerchant(prisma, tx.merchant, data.categoryId);
   }
 
   return NextResponse.json({ transaction: tx });

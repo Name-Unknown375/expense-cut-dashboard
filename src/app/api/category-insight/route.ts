@@ -4,6 +4,8 @@ import { ensureSeeded } from "@/lib/seed";
 import { periodFromSearchParams, resolvePeriod } from "@/lib/period";
 import { buildCategoryInsight } from "@/lib/insights";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: Request) {
   await ensureSeeded();
   const { searchParams } = new URL(request.url);
