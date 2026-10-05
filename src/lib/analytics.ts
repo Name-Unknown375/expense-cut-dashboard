@@ -17,6 +17,7 @@ import {
 } from "date-fns";
 import { resolvePeriod, type PeriodSpec } from "./period";
 import { buildDisposition, buildTaps } from "./insights";
+import { isInternalMovement } from "./autocat";
 
 export type CutItem = {
   id: string;
@@ -66,15 +67,21 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     }),
   ]);
 
-  const spentThisPeriod = sum(thisTx.map((t) => t.amount));
-  const spentPrevPeriod = sum(prevTx.map((t) => t.amount));
+  const isSpend = <T extends { merchant: string; category: { bucket: string } | null }>(t: T) =>
+    t.category?.bucket !== "Transfer" && !isInternalMovement(t.merchant);
+  const thisSpend = thisTx.filter(isSpend);
+  const prevSpend = prevTx.filter(isSpend);
+  const allSpend = allTx.filter(isSpend);
+
+  const spentThisPeriod = sum(thisSpend.map((t) => t.amount));
+  const spentPrevPeriod = sum(prevSpend.map((t) => t.amount));
   const fixedSpent = sum(
-    thisTx.filter((t) => t.category?.bucket === "Fixed").map((t) => t.amount)
+    thisSpend.filter((t) => t.category?.bucket === "Fixed").map((t) => t.amount)
   );
   const variableSpent = Math.max(0, spentThisPeriod - fixedSpent);
 
   const baselineFocus = period.mode === "month" ? start : startOfMonth(now);
-  const baseline = await computeBaseline(allTx, settings?.baselineOverride ?? null, baselineFocus);
+  const baseline = await computeBaseline(allSpend, settings?.baselineOverride ?? null, baselineFocus);
   // Scale 50% target to period length vs a typical month (~30.4 days)
   const monthFactor = period.dayCount / 30.44;
   const target = baseline * 0.5 * (period.mode === "month" ? 1 : monthFactor);
@@ -99,33 +106,35 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
       ? (spentThisPeriod / (income * (period.mode === "month" ? 1 : monthFactor))) * 100
       : null;
 
-  const byCategory = rollupByCategory(thisTx, categories, spentThisPeriod);
+  const byCategory = rollupByCategory(thisSpend, categories, spentThisPeriod);
   const byBucket = rollupByBucket(byCategory);
-  const topMerchants = rollupMerchants(thisTx);
+  const topMerchants = rollupMerchants(thisSpend);
   const cutList = buildCutList({
-    thisTx,
-    prevTx,
-    allTx,
+    thisTx: thisSpend,
+    prevTx: prevSpend,
+    allTx: allSpend,
     spentThisMonth: spentThisPeriod,
     target,
     gapToClose,
     byCategory,
     byBucket,
   });
-  const monthComparison = buildMonthComparison(thisTx, prevTx, categories, baseline);
-  const byDay = rollupByDay(thisTx, start, end);
-  const byWeek = rollupByWeek(thisTx, start, end);
-  const byMonth = period.mode === "year" || period.dayCount > 45 ? rollupByMonth(thisTx, start, end) : [];
+  const monthComparison = buildMonthComparison(thisSpend, prevSpend, categories, baseline);
+  const byDay = rollupByDay(thisSpend, start, end);
+  const byWeek = rollupByWeek(thisSpend, start, end);
+  const byMonth =
+    period.mode === "year" || period.dayCount > 45 ? rollupByMonth(thisSpend, start, end) : [];
 
-  const disposition = buildDisposition(thisTx, period.label);
-  const taps = buildTaps(thisTx);
+  const disposition = buildDisposition(thisSpend, period.label);
+  const taps = buildTaps(thisSpend);
 
   const rules = await prisma.spendingRule.findMany({
     where: { active: true },
     include: { category: true },
     orderBy: { createdAt: "asc" },
   });
-  const ruleStatus = evaluateRules(rules, thisTx, topMerchants);
+  const capFactor = period.mode === "month" ? 1 : period.dayCount / 30.44;
+  const ruleStatus = evaluateRules(rules, thisSpend, topMerchants, capFactor);
 
   const { weekStartKey } = await import("./dates");
   const weekKey = weekStartKey(now);
@@ -179,6 +188,7 @@ function rollupByDay(
   start: Date,
   end: Date
 ) {
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return [];
   const days = eachDayOfInterval({ start, end });
   // Cap chart points for very long ranges — sample by week buckets instead handled elsewhere
   if (days.length > 62) return [];
@@ -387,8 +397,8 @@ function buildCutList(args: {
       id: `recurring-${m.merchant}`,
       title: m.merchant,
       detail: m.recurring
-        ? `Looks like a repeating charge (${m.count} times this month)`
-        : `Paid ${m.count} times this month`,
+        ? `Looks like a repeating charge (${m.count} times this period)`
+        : `Paid ${m.count} times this period`,
       estimatedMonthly: monthlyEst,
       action: m.category === "Subscriptions" || m.recurring ? "Cancel or downgrade" : "Cap or cut in half",
       gapContribution: Math.min(100, (monthlyEst / gap) * 100),
@@ -424,9 +434,9 @@ function buildCutList(args: {
       items.push({
         id: `rising-${c.name}`,
         title: `${c.name} rose`,
-        detail: `Up $${Math.round(rise)} vs last month`,
+        detail: `Up $${Math.round(rise)} vs the prior period`,
         estimatedMonthly: rise * 0.5,
-        action: "Cut this category back to last month",
+        action: "Cut this category back toward the prior period",
         gapContribution: Math.min(100, ((rise * 0.5) / gap) * 100),
         kind: "rising",
       });
@@ -520,7 +530,8 @@ function evaluateRules(
     category: { name: string } | null;
   }[],
   thisTx: { amount: number; date: Date; merchant: string; categoryId: string | null; category: { name: string } | null }[],
-  merchants: { merchant: string; recurring: boolean; count: number }[]
+  merchants: { merchant: string; recurring: boolean; count: number }[],
+  capFactor = 1
 ) {
   return rules.map((rule) => {
     let spent = 0;
@@ -529,7 +540,7 @@ function evaluateRules(
 
     if (rule.type === "category_cap" && rule.categoryId) {
       spent = sum(thisTx.filter((t) => t.categoryId === rule.categoryId).map((t) => t.amount));
-      const limit = rule.limitAmount ?? 0;
+      const limit = (rule.limitAmount ?? 0) * capFactor;
       status = spent > limit ? "over" : "on_track";
       detail = `$${Math.round(spent)} of $${Math.round(limit)} on ${rule.category?.name ?? "category"}`;
     } else if (rule.type === "no_new_subs") {
