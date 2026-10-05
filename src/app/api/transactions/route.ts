@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { ensureSeeded } from "@/lib/seed";
 import { z } from "zod";
+import { periodFromSearchParams, resolvePeriod } from "@/lib/period";
 
 const createSchema = z.object({
   date: z.string(),
@@ -14,27 +15,40 @@ const createSchema = z.object({
 export async function GET(request: Request) {
   await ensureSeeded();
   const { searchParams } = new URL(request.url);
-  const month = searchParams.get("month");
   const categoryId = searchParams.get("categoryId");
+  const merchant = searchParams.get("merchant");
   const q = searchParams.get("q");
 
+  const hasPeriod =
+    searchParams.get("period") ||
+    searchParams.get("from") ||
+    searchParams.get("to") ||
+    searchParams.get("year") ||
+    searchParams.get("month");
+
   const where: Record<string, unknown> = {};
-  if (month) {
-    const start = new Date(`${month}-01T00:00:00`);
-    const end = new Date(start);
-    end.setMonth(end.getMonth() + 1);
-    end.setMilliseconds(-1);
-    where.date = { gte: start, lte: end };
+  if (hasPeriod) {
+    const period = resolvePeriod(
+      periodFromSearchParams({
+        period: searchParams.get("period") ?? undefined,
+        month: searchParams.get("month") ?? undefined,
+        year: searchParams.get("year") ?? undefined,
+        from: searchParams.get("from") ?? undefined,
+        to: searchParams.get("to") ?? undefined,
+      })
+    );
+    where.date = { gte: period.start, lte: period.end };
   }
+
   if (categoryId) {
     if (categoryId === "uncategorized") where.categoryId = null;
     else where.categoryId = categoryId;
   }
+  if (merchant) {
+    where.merchant = { contains: merchant };
+  }
   if (q) {
-    where.OR = [
-      { merchant: { contains: q } },
-      { note: { contains: q } },
-    ];
+    where.OR = [{ merchant: { contains: q } }, { note: { contains: q } }];
   }
 
   const transactions = await prisma.transaction.findMany({
