@@ -86,6 +86,8 @@ model Settings {
   csvColumnMapping  String?  // JSON
   aiCacheJson       String?  // cached Gemini period insight JSON
   watchlistsJson    String?  // [{id, merchantKey, label, capAmount}]
+  ifThenJson        String?  // personal if-then rules; null means never set
+  cutsJson          String?  // cuts marked off [{id, merchantKey, label, off}]
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
