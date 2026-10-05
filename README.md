@@ -54,7 +54,7 @@ Data persists across deploys because it lives in Turso, not on the Netlify files
 ## Routes
 
 | Path | Purpose |
-|---|---|---|
+|---|---|
 | `/` | Dashboard (usual spend, 50% target, pace, categories, waste list) |
 | `/import` | CSV upload + column mapping + review |
 | `/transactions` | List, filter, manual add/edit |
