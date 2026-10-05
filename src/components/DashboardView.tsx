@@ -589,9 +589,9 @@ export function DashboardView({
           <p className="mb-3 text-sm text-[var(--muted)]">Week of {data.awareness.sunday.weekLabel}. Same facts on a good week or a bad one.</p>
           <div className="space-y-2 text-sm leading-relaxed text-[var(--ink)]">
             <p>
-              The card came out on {data.awareness.sunday.cardDays} day
-              {data.awareness.sunday.cardDays === 1 ? "" : "s"}. {data.awareness.sunday.noTapDays} day
-              {data.awareness.sunday.noTapDays === 1 ? "" : "s"} had no tap.
+              The card came out on {data.awareness.sunday.cardDays}{" "}
+              {data.awareness.sunday.cardDays === 1 ? "day" : "days"}. {data.awareness.sunday.noTapDays}{" "}
+              {data.awareness.sunday.noTapDays === 1 ? "day" : "days"} had no tap.
             </p>
             <p>{data.awareness.sunday.capsLine}</p>
             <p>{data.awareness.sunday.ruleLine}</p>
@@ -715,4 +715,3 @@ function WatchlistForm() {
     </form>
   );
 }
-
