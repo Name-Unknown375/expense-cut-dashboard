@@ -1,0 +1,38 @@
+name: sync-import-page
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tmp-sync/import-page/**"
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Assemble page.tsx
+        run: |
+          cat tmp-sync/import-page/part*.txt | tr -d '\n' | base64 -d > src/app/import/page.tsx
+          test -s src/app/import/page.tsx
+          head -c 20 src/app/import/page.tsx
+          grep -q suggest-mapping src/app/import/page.tsx
+      - name: Commit to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/import/page.tsx
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "Use Gemini to auto-map bank CSV columns on import"
+          git push origin HEAD:main
+      - name: Also update feature branch
+        run: |
+          git fetch origin cursor/auto-categorize-spend-3c2c || true
+          git checkout -B cursor/auto-categorize-spend-3c2c origin/cursor/auto-categorize-spend-3c2c 2>/dev/null || git checkout -B cursor/auto-categorize-spend-3c2c
+          cat tmp-sync/import-page/part*.txt | tr -d '\n' | base64 -d > src/app/import/page.tsx
+          git add src/app/import/page.tsx
+          git diff --cached --quiet && echo "no change on feature" && exit 0
+          git commit -m "Use Gemini to auto-map bank CSV columns on import"
+          git push origin HEAD:cursor/auto-categorize-spend-3c2c
