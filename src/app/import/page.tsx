@@ -15,19 +15,36 @@ type Mapping = {
   amountStyle: "signed" | "debit_credit";
 };
 
+type FileResult = {
+  fileName: string;
+  imported: number;
+  duplicates: number;
+  skipped: number;
+  rows: number;
+  needsReview: { id: string; merchant: string; amount: number; date: string }[];
+};
+
+type QueuedFile = { id: string; file: File; headers: string[] };
+
 export default function ImportPage() {
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
-  const [file, setFile] = useState<File | null>(null);
   const [mapping, setMapping] = useState<Mapping>({
     date: "",
     amount: "",
     description: "",
     amountStyle: "signed",
   });
-  const [result, setResult] = useState<{
+  const [results, setResults] = useState<FileResult[] | null>(null);
+  const [totals, setTotals] = useState<{
     imported: number;
-    needsReview: { id: string; merchant: string; amount: number; date: string }[];
+    duplicates: number;
+    skipped: number;
+    needsReview: FileResult["needsReview"];
   } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(
+    null
+  );
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -43,52 +60,106 @@ export default function ImportPage() {
       .then((d) => setCategories(d.categories ?? []));
   }, []);
 
-  function onFile(f: File | null) {
-    setFile(f);
-    setResult(null);
+  function addFiles(list: FileList | File[] | null) {
+    if (!list) return;
+    setResults(null);
+    setTotals(null);
     setError("");
-    if (!f) return;
-    Papa.parse(f, {
-      header: true,
-      preview: 5,
-      complete: (res) => {
-        const cols = res.meta.fields ?? [];
-        setHeaders(cols);
-        setMapping((m) => ({
-          ...m,
-          date: m.date || guess(cols, ["date", "posted", "transaction date"]),
-          amount: m.amount || guess(cols, ["amount", "value"]),
-          description:
-            m.description ||
-            guess(cols, ["description", "merchant", "payee", "name", "memo"]),
-          debit: m.debit || guess(cols, ["debit", "withdrawal"]),
-          credit: m.credit || guess(cols, ["credit", "deposit"]),
-          category: m.category || guess(cols, ["category"]),
-        }));
-      },
+    const arr = Array.from(list).filter((f) => f.name.toLowerCase().endsWith(".csv") || f.type.includes("csv"));
+    arr.forEach((file) => {
+      Papa.parse(file, {
+        header: true,
+        preview: 5,
+        complete: (res) => {
+          const cols = res.meta.fields ?? [];
+          setQueue((q) => {
+            if (q.some((x) => x.file.name === file.name && x.file.size === file.size)) return q;
+            return [...q, { id: `${file.name}-${file.size}-${file.lastModified}`, file, headers: cols }];
+          });
+          setHeaders((prev) => (prev.length ? prev : cols));
+          setMapping((m) => ({
+            ...m,
+            date: m.date || guess(cols, ["date", "posted", "transaction date"]),
+            amount: m.amount || guess(cols, ["amount", "value"]),
+            description:
+              m.description ||
+              guess(cols, ["description", "merchant", "payee", "name", "memo"]),
+            debit: m.debit || guess(cols, ["debit", "withdrawal"]),
+            credit: m.credit || guess(cols, ["credit", "deposit"]),
+            category: m.category || guess(cols, ["category"]),
+          }));
+        },
+      });
     });
   }
 
+  function removeFile(id: string) {
+    setQueue((q) => {
+      const next = q.filter((x) => x.id !== id);
+      setHeaders(next[0]?.headers ?? []);
+      return next;
+    });
+  }
+
+  const schemasMatch = useMemo(() => {
+    if (queue.length <= 1) return true;
+    const base = [...queue[0].headers].sort().join("|");
+    return queue.every((q) => [...q.headers].sort().join("|") === base);
+  }, [queue]);
+
   const canImport = useMemo(() => {
-    if (!file || !mapping.date || !mapping.description) return false;
+    if (!queue.length || !mapping.date || !mapping.description) return false;
     if (mapping.amountStyle === "signed") return Boolean(mapping.amount);
     return Boolean(mapping.debit || mapping.credit);
-  }, [file, mapping]);
+  }, [queue, mapping]);
 
   async function runImport() {
-    if (!file) return;
+    if (!queue.length) return;
     setBusy(true);
     setError("");
+    setProgress({ done: 0, total: queue.length, current: queue[0].file.name });
+
+    // Import all files in one request (server processes sequentially + dedupes)
     const form = new FormData();
-    form.append("file", file);
     form.append("mapping", JSON.stringify(mapping));
-    const res = await fetch("/api/import", { method: "POST", body: form });
-    setBusy(false);
-    if (!res.ok) {
+    for (const q of queue) form.append("files", q.file);
+
+    try {
+      // Fake stepwise progress while waiting
+      const tick = window.setInterval(() => {
+        setProgress((p) =>
+          p && p.done < p.total - 1
+            ? {
+                ...p,
+                done: p.done + 1,
+                current: queue[Math.min(p.done + 1, queue.length - 1)]?.file.name ?? p.current,
+              }
+            : p
+        );
+      }, 400);
+
+      const res = await fetch("/api/import", { method: "POST", body: form });
+      window.clearInterval(tick);
+      setBusy(false);
+      setProgress(null);
+      if (!res.ok) {
+        setError("Import failed");
+        return;
+      }
+      const data = await res.json();
+      setResults(data.files ?? []);
+      setTotals({
+        imported: data.imported ?? 0,
+        duplicates: data.duplicates ?? 0,
+        skipped: data.skipped ?? 0,
+        needsReview: data.needsReview ?? [],
+      });
+      setProgress({ done: queue.length, total: queue.length, current: "Done" });
+    } catch {
+      setBusy(false);
+      setProgress(null);
       setError("Import failed");
-      return;
     }
-    setResult(await res.json());
   }
 
   async function setCategory(id: string, categoryId: string) {
@@ -97,10 +168,16 @@ export default function ImportPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ categoryId }),
     });
-    setResult((r) =>
-      r
-        ? { ...r, needsReview: r.needsReview.filter((x) => x.id !== id) }
-        : r
+    setTotals((t) =>
+      t ? { ...t, needsReview: t.needsReview.filter((x) => x.id !== id) } : t
+    );
+    setResults((rs) =>
+      rs
+        ? rs.map((r) => ({
+            ...r,
+            needsReview: r.needsReview.filter((x) => x.id !== id),
+          }))
+        : rs
     );
   }
 
@@ -110,17 +187,18 @@ export default function ImportPage() {
       <main className="mx-auto max-w-3xl px-4 py-8">
         <h1 className="font-display text-3xl text-[var(--ink)]">Import CSV</h1>
         <p className="mt-1 text-[var(--muted)]">
-          Map columns once — we remember them. Uncategorized rows get a quick review.
+          Upload one or many bank CSVs. We remember your column mapping and skip duplicate rows.
         </p>
 
         <div className="mt-6 space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
           <label className="block text-sm">
-            <span className="text-[var(--muted)]">Bank CSV file</span>
+            <span className="text-[var(--muted)]">Bank CSV files</span>
             <input
               type="file"
               accept=".csv,text/csv"
+              multiple
               className="mt-1 block w-full text-sm"
-              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => addFiles(e.target.files)}
             />
           </label>
           <p className="text-xs text-[var(--muted)]">
@@ -129,6 +207,54 @@ export default function ImportPage() {
               Download sample CSV
             </a>
           </p>
+
+          {queue.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-medium text-[var(--ink)]">
+                  Ready to import ({queue.length} file{queue.length === 1 ? "" : "s"})
+                </h2>
+                <label className="cursor-pointer text-sm text-[var(--accent)] underline">
+                  Add more
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => addFiles(e.target.files)}
+                  />
+                </label>
+              </div>
+              <ul className="space-y-1">
+                {queue.map((q) => (
+                  <li
+                    key={q.id}
+                    className="flex items-center justify-between rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
+                  >
+                    <span>
+                      {q.file.name}{" "}
+                      <span className="text-[var(--muted)]">
+                        ({Math.round(q.file.size / 1024)} KB · {q.headers.length} columns)
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(q.id)}
+                      className="text-rose-600 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {!schemasMatch && (
+                <p className="mt-2 text-xs text-amber-800">
+                  Column names differ across files — mapping still applies by column name. Rows whose
+                  mapped columns are missing will be skipped.
+                </p>
+              )}
+            </div>
+          )}
 
           {headers.length > 0 && (
             <>
@@ -198,27 +324,61 @@ export default function ImportPage() {
                 onClick={runImport}
                 className="rounded-md bg-[var(--ink)] px-4 py-2 text-white disabled:opacity-50"
               >
-                {busy ? "Importing…" : "Import transactions"}
+                {busy
+                  ? `Importing… ${progress ? `${progress.done}/${progress.total}` : ""}`
+                  : `Import ${queue.length} file${queue.length === 1 ? "" : "s"}`}
               </button>
+              {progress && (
+                <div>
+                  <div className="h-2 overflow-hidden rounded-full bg-[var(--wash)]">
+                    <div
+                      className="h-full bg-[var(--accent)] transition-all"
+                      style={{
+                        width: `${Math.round((progress.done / Math.max(1, progress.total)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    {progress.current}
+                    {progress.done >= progress.total ? " — finished" : ""}
+                  </p>
+                </div>
+              )}
             </>
           )}
           {error && <p className="text-sm text-rose-600">{error}</p>}
         </div>
 
-        {result && (
+        {totals && results && (
           <div className="mt-6 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
             <h2 className="font-display text-xl">Import complete</h2>
             <p className="text-sm text-[var(--muted)]">
-              Added {result.imported} transactions.{" "}
+              Added {totals.imported} · skipped {totals.duplicates} duplicates · {totals.skipped}{" "}
+              other skips.{" "}
               <Link href="/transactions" className="underline">
                 View list
               </Link>
             </p>
-            {result.needsReview.length > 0 && (
+            <ul className="mt-4 space-y-2">
+              {results.map((r) => (
+                <li
+                  key={r.fileName}
+                  className="rounded-lg bg-[var(--wash)] px-3 py-2 text-sm text-[var(--ink)]"
+                >
+                  <span className="font-medium">{r.fileName}</span>
+                  <span className="text-[var(--muted)]">
+                    {" "}
+                    — {r.imported} added, {r.duplicates} duplicates, {r.skipped} skipped ({r.rows}{" "}
+                    rows)
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {totals.needsReview.length > 0 && (
               <>
                 <h3 className="mt-4 font-medium">Quick categorize</h3>
                 <ul className="mt-2 space-y-2">
-                  {result.needsReview.map((row) => (
+                  {totals.needsReview.map((row) => (
                     <li
                       key={row.id}
                       className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--wash)] px-3 py-2 text-sm"
