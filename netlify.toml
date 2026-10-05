@@ -1,5 +1,6 @@
 [build]
-  command = "npx prisma generate && npx prisma db push && next build"
+  # Schema is applied to Turso separately; build only generates client + Next app.
+  command = "npx prisma generate && next build"
   publish = ".next"
 
 [[plugins]]
