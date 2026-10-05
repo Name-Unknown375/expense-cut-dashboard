@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f3f0e8;
+  --foreground: #1c1917;
+  --ink: #1c1917;
+  --muted: #6b6560;
+  --surface: #fffdf8;
+  --wash: #ebe6db;
+  --line: #ddd6c8;
+  --accent: #c45c26;
+  --accent-deep: #9a3f14;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #f7e2c8 0%, transparent 55%),
+    radial-gradient(900px 400px at 90% 0%, #d9ebe3 0%, transparent 50%),
+    var(--background);
+  min-height: 100vh;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
