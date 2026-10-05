@@ -108,7 +108,9 @@ function TransactionsInner() {
         <div>
           <h1 className="font-display text-3xl text-[var(--ink)]">Transactions</h1>
           <p className="mt-1 text-[var(--muted)]">
-            {merchant ? `Purchases at ${merchant}` : "Add cash, fix categories, filter by period."}
+            {merchant
+              ? `Purchases at ${merchant}`
+              : "Add cash spend — categories are assigned automatically."}
           </p>
         </div>
         {(categoryId || merchant) && (
@@ -160,7 +162,7 @@ function TransactionsInner() {
             onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
             className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-1.5"
           >
-            <option value="">None</option>
+            <option value="">Auto</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -246,10 +248,13 @@ function TransactionsInner() {
             <div className="flex items-center gap-3">
               <select
                 value={t.categoryId ?? ""}
-                onChange={(e) => updateCategory(t.id, e.target.value)}
+                onChange={(e) => {
+                  if (e.target.value) updateCategory(t.id, e.target.value);
+                }}
                 className="rounded border border-[var(--line)] px-2 py-1"
+                title="Override auto category"
               >
-                <option value="">Uncategorized</option>
+                {!t.categoryId && <option value="">Auto…</option>}
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
