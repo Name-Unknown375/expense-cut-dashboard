@@ -7,11 +7,11 @@ function createPrismaClient() {
   const tursoToken = process.env.TURSO_AUTH_TOKEN;
 
   if (tursoUrl) {
-    // Lazy require so local file mode does not need the adapter path
+    // Serverless-friendly web client (Netlify/Vercel). Avoids Node-native bindings.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { PrismaLibSQL } = require("@prisma/adapter-libsql") as typeof import("@prisma/adapter-libsql");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createClient } = require("@libsql/client") as typeof import("@libsql/client");
+    const { createClient } = require("@libsql/client/web") as typeof import("@libsql/client/web");
     const libsql = createClient({
       url: tursoUrl,
       authToken: tursoToken,
