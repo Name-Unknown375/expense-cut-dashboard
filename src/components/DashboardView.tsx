@@ -164,6 +164,24 @@ export function DashboardView({
         <div className="relative mt-5 rounded-xl bg-white/10 px-4 py-3">
           <p className="text-xs uppercase tracking-wide text-white/50">Do this next</p>
           <p className="mt-1 text-lg">{nextAction}</p>
+          <p className="mt-2 text-sm text-white/80">
+            Spent {money(data.opening.spent)}. About {money(data.opening.locked)} is rent once plus
+            big one-offs. Card taps you can shrink: {money(data.opening.shrinkable)}
+            {data.opening.eTransfer > 0
+              ? `, plus ${money(data.opening.eTransfer)} to ${data.opening.eTransferName ?? "a named e-transfer"} that may be optional`
+              : ""}
+            .
+            {(data.opening.paidCard > 0 || data.opening.movedAccount > 0) && (
+              <>
+                {" "}
+                Not spending: {money(data.opening.paidCard)} paid the card
+                {data.opening.movedAccount > 0
+                  ? ` and ${money(data.opening.movedAccount)} moved to another account`
+                  : ""}
+                .
+              </>
+            )}
+          </p>
           {data.pastYou && <p className="mt-1 text-sm text-white/70">{data.pastYou}</p>}
         </div>
         <div className="relative mt-4 h-3 overflow-hidden rounded-full bg-white/15">
@@ -183,10 +201,20 @@ export function DashboardView({
           <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">{data.story.rentNote}</p>
         )}
         <ul className="mt-4 divide-y divide-[var(--line)]">
-          {data.story.lines.slice(0, 10).map((line) => (
+          {data.story.lines.slice(0, 12).map((line) => (
             <li key={line.what} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span>
-                {line.what}
+                {line.categoryId ? (
+                  <button
+                    type="button"
+                    className="text-left hover:underline"
+                    onClick={() => openCategory(line.categoryId!)}
+                  >
+                    {line.what}
+                  </button>
+                ) : (
+                  line.what
+                )}
                 {line.detail ? <span className="text-[var(--muted)]"> · {line.detail}</span> : null}
               </span>
               <span className="flex items-center gap-2">
@@ -194,6 +222,7 @@ export function DashboardView({
                 <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${verdictStyle[line.verdict]}`}>
                   {line.verdict}
                 </span>
+                <span className="hidden text-[var(--muted)] sm:inline">{line.sentence}</span>
               </span>
             </li>
           ))}
@@ -204,6 +233,9 @@ export function DashboardView({
             {data.story.excluded.map((e) => `${e.name} ${money(e.amount)}`).join(", ")}.
           </p>
         )}
+        <p className="mt-3 text-sm text-[var(--muted)]">
+          Deposits and e-transfers in are not in this total.
+        </p>
       </section>
 
       {data.pace.length > 1 && (
@@ -410,6 +442,10 @@ export function DashboardView({
           )}
         </div>
       </section>
+
+      {data.caps.length > 0 && (
+        <CapsHold spent={data.spentThisPeriod} rows={data.caps} />
+      )}
 
       {/* Trend charts — polish */}
       {(showMonthTrend || showDay || showWeek) && (
@@ -669,6 +705,56 @@ export function DashboardView({
         </section>
       </div>
     </div>
+  );
+}
+
+function CapsHold({
+  spent,
+  rows,
+}: {
+  spent: number;
+  rows: { id: string; label: string; actual: number; cap: number }[];
+}) {
+  const [caps, setCaps] = useState(rows.map((r) => r.cap));
+  const held = caps.reduce((s, n) => s + (Number.isFinite(n) ? n : 0), 0);
+  const actual = rows.reduce((s, r) => s + r.actual, 0);
+  const month = Math.max(0, spent - actual + held);
+  const under = spent - month;
+  return (
+    <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5">
+      <h2 className="font-display text-xl text-[var(--ink)]">If these caps hold</h2>
+      <p className="mt-1 text-sm text-[var(--muted)]">
+        Change a cap if that line should stay. The total updates. This is a choice, not an order.
+      </p>
+      <ul className="mt-4 space-y-2">
+        {rows.map((row, i) => (
+          <li key={row.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span>
+              {row.label}{" "}
+              <span className="text-[var(--muted)]">this period {money(row.actual)}</span>
+            </span>
+            <label className="text-[var(--muted)]">
+              Cap
+              <input
+                type="number"
+                min={0}
+                value={Number.isFinite(caps[i]) ? caps[i] : 0}
+                onChange={(e) => {
+                  const next = [...caps];
+                  next[i] = parseFloat(e.target.value);
+                  setCaps(next);
+                }}
+                className="ml-2 w-24 rounded-md border border-[var(--line)] px-2 py-1 text-[var(--ink)]"
+              />
+            </label>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-4 text-sm font-medium text-[var(--ink)]">
+        Month would be about {money(month)}
+        {under > 0 ? `, which is ${money(under)} under this period` : ""}.
+      </p>
+    </section>
   );
 }
 

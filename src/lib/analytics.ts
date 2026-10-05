@@ -17,7 +17,15 @@ import {
   subMonths,
 } from "date-fns";
 import { resolvePeriod, type PeriodSpec } from "./period";
-import { buildDisposition, buildPeriodStory, buildTaps, merchantKey, shortMerchant } from "./insights";
+import {
+  buildCaps,
+  buildDisposition,
+  buildOpening,
+  buildPeriodStory,
+  buildTaps,
+  merchantKey,
+  shortMerchant,
+} from "./insights";
 import { buildPace, buildSubscriptions, capDayLabel, pastYouLine } from "./coach";
 import { isInternalMovement } from "./autocat";
 
@@ -135,6 +143,11 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
   );
   const disposition = buildDisposition([...thisSpend, ...flaggedTransfers], period.label);
   const story = buildPeriodStory([...thisSpend, ...flaggedTransfers], period.label);
+  const transferRows = thisTx.filter(
+    (t) => t.category?.bucket === "Transfer" || /to card|to account|internet transfer|e-transfer/i.test(t.merchant)
+  );
+  const opening = buildOpening(thisSpend, transferRows);
+  const caps = buildCaps(thisSpend, transferRows);
   const rentInPeriod = thisTx.filter(isRentLine);
   const rentDoubled = rentInPeriod.length >= 2;
   const taps = buildTaps(thisSpend);
@@ -238,6 +251,8 @@ export async function getDashboardData(monthOrPeriod?: string | PeriodSpec) {
     byMonth,
     disposition,
     story,
+    opening,
+    caps,
     rentDoubled,
     fixedSpent,
     pace: buildPace(thisSpend, start, end, target),
