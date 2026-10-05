@@ -9,7 +9,8 @@ export type Verdict =
   | "Fine"
   | "Keep"
   | "Skip next month"
-  | "Watch";
+  | "Watch"
+  | "Name this";
 
 export type DispositionRow = {
   id: string;
@@ -87,6 +88,11 @@ function phraseFor(merchant: string, count: number, min: number, max: number, av
   return `${wc} ${unit}`;
 }
 
+/** Canonical grouping key shared by insights, dedupe, rules, and filters. */
+export function merchantKey(raw: string): string {
+  return shortMerchant(raw).toLowerCase();
+}
+
 /** Readable label: drop SQ *, PayPal noise, store numbers, and city/province. */
 export function shortMerchant(raw: string): string {
   const original = raw.trim();
@@ -136,7 +142,7 @@ function groupByMerchant(tx: Tx[]) {
     }
   >();
   for (const t of tx) {
-    const key = shortMerchant(t.merchant).toLowerCase();
+    const key = merchantKey(t.merchant);
     const row = map.get(key) ?? {
       merchant: shortMerchant(t.merchant),
       amounts: [],
@@ -177,6 +183,13 @@ function verdictForGroup(g: {
 }): Verdict {
   const name = (g.categoryName || "").toLowerCase();
   const bucket = g.bucket || "";
+  if (
+    /internet banking e-transfer/.test(g.merchant.toLowerCase()) &&
+    !/wealth realty|osteopath|naturopath/.test(g.merchant.toLowerCase()) &&
+    g.amount >= 150
+  ) {
+    return "Name this";
+  }
   if (bucket === "Fixed" || /rent|utilities|subscription/.test(name)) return "Fixed";
   if (g.count === 1 && g.amount >= 150) return "One-time";
   if (g.count === 1 && g.amount < 40) return "Fine";
@@ -215,6 +228,8 @@ function actionForVerdict(verdict: Verdict, merchant: string): string {
       return `Fine as-is.`;
     case "Watch":
       return `Watch ${merchant} — heading toward a leak.`;
+    case "Name this":
+      return `Name ${merchant} or treat it as a transfer — it is not a store.`;
     default:
       return `Review ${merchant}.`;
   }
@@ -315,6 +330,86 @@ function concreteNextAction(
     return `Don't repeat ${name}. That charge was $${dollars}.`;
   }
   return `Watch ${name}: $${dollars} so far. One more trip and it becomes a habit.`;
+}
+
+export type StoryLine = { what: string; amount: number; verdict: Verdict; detail?: string };
+
+/** Grok-style period story: rent, eating-out rollup, and the big one-offs kept out of taps. */
+export function buildPeriodStory(
+  tx: Tx[],
+  periodLabel: string
+): {
+  title: string;
+  lede: string;
+  rentNote?: string;
+  lines: StoryLine[];
+  excluded: Array<{ name: string; amount: number }>;
+} {
+  const groups = groupByMerchant(tx);
+  const rent = groups.filter(
+    (g) => /rent/i.test(g.categoryName || "") || /wealth realty/i.test(g.merchant)
+  );
+  const rentCount = rent.reduce((n, g) => n + g.count, 0);
+  const rentTotal = sum(rent.map((g) => g.amount));
+  const typicalRent = rentCount > 1 ? rentTotal / rentCount : rentTotal;
+
+  const dining = groups.filter((g) => g.categoryName === "Dining");
+  const diningTotal = sum(dining.map((g) => g.amount));
+  const diningTaps = dining.reduce((n, g) => n + g.count, 0);
+
+  const excluded = groups
+    .filter((g) => g.count === 1 && g.amount >= 200 && g.bucket !== "Fixed" && g.categoryName !== "Rent")
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 4)
+    .map((g) => ({ name: g.merchant, amount: g.amount }));
+
+  const lines: StoryLine[] = [];
+  if (rentTotal > 0) {
+    lines.push({
+      what: rentCount > 1 ? `Rent (${rentCount} charges)` : "Rent (one month)",
+      amount: rentCount > 1 ? typicalRent : rentTotal,
+      verdict: "Fixed",
+      detail: rentCount > 1 ? `Export total $${Math.round(rentTotal)}` : undefined,
+    });
+  }
+  if (diningTaps > 0) {
+    lines.push({
+      what: `Eating out, ${diningTaps} tap${diningTaps === 1 ? "" : "s"}`,
+      amount: diningTotal,
+      verdict: diningTaps >= 8 ? "Main leak" : diningTaps >= 3 ? "Cap it" : "Fine",
+    });
+  }
+  const named = groups
+    .filter((g) => g.categoryName !== "Dining" && g.categoryName !== "Rent")
+    .filter((g) => !/wealth realty/i.test(g.merchant))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 8);
+  for (const g of named) {
+    lines.push({
+      what: g.count > 1 ? `${g.merchant}, ${g.phrase}` : g.merchant,
+      amount: g.amount,
+      verdict: verdictForGroup(g),
+    });
+  }
+
+  let rentNote: string | undefined;
+  let lede = `${periodLabel} is mostly the taps under the big fixed lines.`;
+  if (rentCount > 1) {
+    rentNote = `Rent was charged ${rentCount} times (${"$"}${Math.round(rentTotal)} combined). A normal month is about ${"$"}${Math.round(typicalRent || rentTotal)}.`;
+    lede = rentNote;
+  } else if (rentTotal > 0) {
+    lede = `One rent payment is about ${"$"}${Math.round(rentTotal)}. The cut is in the taps, not the rent.`;
+  } else if (diningTaps >= 3) {
+    lede = `Eating out is ${diningTaps} taps, about ${"$"}${Math.round(diningTotal)}. That is the leak to cap.`;
+  }
+
+  return {
+    title: `What ${periodLabel} actually was`,
+    lede,
+    rentNote,
+    lines,
+    excluded,
+  };
 }
 
 /** "Where the taps are" — frequent small/mid repeats, excluding big one-offs */
