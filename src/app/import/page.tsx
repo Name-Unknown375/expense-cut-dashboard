@@ -51,6 +51,12 @@ export default function ImportPage() {
     skipped: number;
     autoCategorized: number;
   } | null>(null);
+  const [quality, setQuality] = useState<{
+    labeled: number;
+    otherLeft: number;
+    sampleOther: string[];
+    warning: string | null;
+  } | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(
     null
   );
@@ -287,6 +293,7 @@ export default function ImportPage() {
         skipped: data.skipped ?? 0,
         autoCategorized: data.autoCategorized ?? 0,
       });
+      if (data.quality) setQuality(data.quality);
       if (data.warning) setMapNote(String(data.warning));
       setProgress({ done: queue.length, total: queue.length, current: "Done" });
     } catch (e) {
@@ -507,6 +514,24 @@ export default function ImportPage() {
                 Open dashboard
               </Link>
             </p>
+            {quality && (
+              <div className="mt-4 rounded-lg bg-[var(--wash)] px-3 py-3 text-sm">
+                <p className="font-medium text-[var(--ink)]">Import quality</p>
+                <p className="mt-1 text-[var(--muted)]">
+                  Added {quality.labeled ? totals?.imported : totals?.imported} rows · labeled{" "}
+                  {quality.labeled} · {quality.otherLeft} still in Other.
+                </p>
+                {quality.warning && <p className="mt-1 text-amber-800">{quality.warning}</p>}
+                {quality.sampleOther?.length > 0 && (
+                  <p className="mt-1 text-[var(--muted)]">
+                    Still unlabeled examples: {quality.sampleOther.slice(0, 5).join(" · ")}
+                  </p>
+                )}
+                <Link href="/transactions" className="mt-2 inline-block underline">
+                  Review transactions
+                </Link>
+              </div>
+            )}
             <ul className="mt-4 space-y-2">
               {results.map((r) => (
                 <li
